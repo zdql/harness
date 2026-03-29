@@ -1,0 +1,9 @@
+# Rust
+/target/
+
+# Bun / Node
+node_modules/
+packages/frontend/bun.lock
+
+# OS
+.DS_Store
