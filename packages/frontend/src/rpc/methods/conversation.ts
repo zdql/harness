@@ -25,3 +25,12 @@ export interface SwitchParams {
 export interface SwitchResult {
   id: string;
 }
+
+export interface SendParams {
+  id: string;
+  message: string;
+}
+
+export interface SendResult {
+  reply: string;
+}
