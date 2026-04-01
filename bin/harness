@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SERVER_BIN="$ROOT/target/debug/harness-server"
+
+# Build the Rust server if missing or outdated
+if [ ! -f "$SERVER_BIN" ] || [ -n "$(find "$ROOT/crates" -name '*.rs' -newer "$SERVER_BIN" 2>/dev/null | head -1)" ]; then
+  echo "Building harness-server..."
+  cargo build --manifest-path "$ROOT/Cargo.toml" --bin harness-server 2>&1
+fi
+
+# Run the TUI
+exec bun run "$ROOT/packages/frontend/src/index.tsx"
