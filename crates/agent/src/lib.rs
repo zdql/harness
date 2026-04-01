@@ -1,5 +1,5 @@
+pub mod agent;
 pub mod conversation;
-pub mod core;
 pub mod llm;
 pub mod subagents;
 pub mod tasks;
