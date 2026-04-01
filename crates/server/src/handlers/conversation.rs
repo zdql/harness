@@ -1,11 +1,13 @@
 // ---------------------------------------------------------------------------
-// handlers::conversation — Conversation CRUD handlers
+// handlers::conversation — Conversation CRUD + agent send handlers
 // ---------------------------------------------------------------------------
 
 use crate::rpc::methods::conversation::{
     CreateParams, CreateResult, ListParams, ListResult, ConversationSummary,
-    SwitchParams, SwitchResult,
+    SwitchParams, SwitchResult, SendParams, SendResult,
 };
+use crate::ServerState;
+use agent::conversation::{self, Conversation};
 use storage::fs::FsStore;
 use storage::ConversationStore;
 
@@ -18,17 +20,15 @@ pub fn create(_params: CreateParams) -> Result<CreateResult, String> {
     let store = store()?;
     let id = uuid();
 
-    let metadata = serde_json::json!({
-        "id": id,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-    });
+    // Use the agent's Conversation type so metadata is consistent
+    let settings = storage::settings::read();
+    let mut conv = Conversation::new(&id);
+    if let Some(ref model) = settings.model {
+        conv = conv.with_model(model);
+    }
+    conversation::save(&store, &conv).map_err(|e| format!("failed to save: {e}"))?;
 
-    store
-        .save_metadata(&id, &metadata)
-        .map_err(|e| format!("failed to save metadata: {e}"))?;
-
-    // Also persist as the active conversation in settings
+    // Set as active conversation
     let mut settings = storage::settings::read();
     settings.conversation = Some(id.clone());
     storage::settings::write(&settings)
@@ -50,7 +50,6 @@ pub fn list(_params: ListParams) -> Result<ListResult, String> {
 
 /// Handle `conversation.switch` — set the active conversation.
 pub fn switch(params: SwitchParams) -> Result<SwitchResult, String> {
-    // Verify the conversation exists
     let store = store()?;
     store
         .load_metadata(&params.id)
@@ -64,6 +63,40 @@ pub fn switch(params: SwitchParams) -> Result<SwitchResult, String> {
     Ok(SwitchResult { id: params.id })
 }
 
+/// Handle `conversation.send` — send a user message through the agent loop.
+///
+/// This is the core integration point: it loads the conversation from disk,
+/// runs the agent loop (LLM calls + tool execution), persists the result,
+/// and returns the assistant's final text reply.
+pub async fn send(params: SendParams, state: &ServerState) -> Result<SendResult, String> {
+    let store = store()?;
+
+    // Load the conversation (or error if it doesn't exist)
+    let mut conv = conversation::load(&store, &params.id)
+        .map_err(|e| format!("failed to load conversation: {e}"))?;
+
+    // Ensure the conversation has a model set
+    if conv.model.is_none() {
+        let settings = storage::settings::read();
+        conv.model = settings.model.or_else(|| {
+            Some("openai/gpt-4o-mini".to_string()) // sensible default
+        });
+    }
+
+    // Run the agent loop — this calls the LLM, executes tools, and loops
+    let reply = agent::agent::run(
+        &state.chat_client,
+        &store,
+        &mut conv,
+        &state.tools,
+        &params.message,
+    )
+    .await
+    .map_err(|e| format!("agent error: {e}"))?;
+
+    Ok(SendResult { reply })
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -74,14 +107,4 @@ fn uuid() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     format!("{:x}-{:x}", d.as_secs(), d.subsec_nanos())
-}
-
-fn now_iso() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let d = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = d.as_secs();
-    // Simple ISO-ish timestamp without pulling in chrono
-    format!("{secs}")
 }

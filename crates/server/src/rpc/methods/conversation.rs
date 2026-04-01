@@ -70,3 +70,29 @@ pub struct SwitchParams {
 pub struct SwitchResult {
     pub id: String,
 }
+
+// ===========================================================================
+// conversation.send
+// ===========================================================================
+
+pub struct Send;
+
+impl RpcMethod for Send {
+    const NAME: &'static str = "conversation.send";
+    type Params = SendParams;
+    type Result = SendResult;
+}
+
+#[derive(serde::Deserialize)]
+pub struct SendParams {
+    /// The conversation to send to (must already exist).
+    pub id: String,
+    /// The user's message text.
+    pub message: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct SendResult {
+    /// The assistant's final text reply.
+    pub reply: String,
+}

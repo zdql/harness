@@ -37,6 +37,7 @@ export function App() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Create a new conversation on boot
@@ -82,12 +83,26 @@ export function App() {
   });
 
   function handleSubmit(text: string) {
+    if (!conversationId || loading) return;
+
     setMessages((msgs) => [...msgs, { role: "user", content: text }]);
-    // TODO: send to agent, stream response back
-    setMessages((msgs) => [
-      ...msgs,
-      { role: "assistant", content: "(echo) " + text },
-    ]);
+    setLoading(true);
+
+    client
+      .call("conversation.send", { id: conversationId, message: text })
+      .then((r) => {
+        setMessages((msgs) => [
+          ...msgs,
+          { role: "assistant", content: r.reply },
+        ]);
+      })
+      .catch((e) => {
+        setMessages((msgs) => [
+          ...msgs,
+          { role: "assistant", content: `Error: ${e}` },
+        ]);
+      })
+      .finally(() => setLoading(false));
   }
 
   if (error) {
@@ -138,13 +153,17 @@ export function App() {
       )}
 
       {/* Prompt input — fixed at the bottom */}
-      <PromptInput isActive={!showSettings} onSubmit={handleSubmit} />
+      <PromptInput isActive={!showSettings && !loading} onSubmit={handleSubmit} />
 
       {/* Status bar */}
       <Box paddingX={1}>
-        <Text dimColor>
-          {messages.length} message{messages.length !== 1 ? "s" : ""}
-        </Text>
+        {loading ? (
+          <Text color="yellow">Thinking...</Text>
+        ) : (
+          <Text dimColor>
+            {messages.length} message{messages.length !== 1 ? "s" : ""}
+          </Text>
+        )}
       </Box>
     </Box>
   );
