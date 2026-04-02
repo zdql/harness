@@ -79,7 +79,7 @@ pub async fn send(params: SendParams, state: &ServerState) -> Result<SendResult,
     if conv.model.is_none() {
         let settings = storage::settings::read();
         conv.model = settings.model.or_else(|| {
-            Some("openai/gpt-4o-mini".to_string()) // sensible default
+            Some("openai/gpt-4.1-nano".to_string()) // sensible default
         });
     }
 

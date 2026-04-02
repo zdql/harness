@@ -10,8 +10,8 @@
 //   └─ status bar ───────────────────────────┘
 //
 // - Boots into a new conversation automatically
-// - Cmd+S toggles settings overlay
-// - Cmd+T creates a new conversation
+// - Ctrl+S toggles settings overlay
+// - Ctrl+N creates a new conversation
 // - Esc closes any overlay
 // ---------------------------------------------------------------------------
 
@@ -42,20 +42,23 @@ export function App() {
 
   // Create a new conversation on boot
   useEffect(() => {
-    client
-      .call("conversation.create", {})
-      .then((r) => {
-        setConversationId(r.id);
+    client.call("conversation.create", {}).then((r) => {
+      if (r.ok) {
+        setConversationId(r.value.id);
         setMessages([]);
-      })
-      .catch((e) => setError(String(e)));
+      } else {
+        setError(r.error.message);
+      }
+    });
 
     return () => client.close();
   }, [client]);
 
-  // Global shortcuts (higher priority than PromptInput)
+  const promptFocused = !showSettings && !loading;
+
+  // Global shortcuts
   useInput((input, key) => {
-    const action = matchShortcut(input, key);
+    const action = matchShortcut(input, key, { promptFocused });
     if (!action) return;
 
     switch (action.type) {
@@ -66,14 +69,15 @@ export function App() {
         if (showSettings) setShowSettings(false);
         break;
       case "new_conversation":
-        client
-          .call("conversation.create", {})
-          .then((r) => {
-            setConversationId(r.id);
+        client.call("conversation.create", {}).then((r) => {
+          if (r.ok) {
+            setConversationId(r.value.id);
             setMessages([]);
             setShowSettings(false);
-          })
-          .catch((e) => setError(String(e)));
+          } else {
+            setError(r.error.message);
+          }
+        });
         break;
       case "quit":
         client.close();
@@ -91,18 +95,19 @@ export function App() {
     client
       .call("conversation.send", { id: conversationId, message: text })
       .then((r) => {
-        setMessages((msgs) => [
-          ...msgs,
-          { role: "assistant", content: r.reply },
-        ]);
-      })
-      .catch((e) => {
-        setMessages((msgs) => [
-          ...msgs,
-          { role: "assistant", content: `Error: ${e}` },
-        ]);
-      })
-      .finally(() => setLoading(false));
+        if (r.ok) {
+          setMessages((msgs) => [
+            ...msgs,
+            { role: "assistant", content: r.value.reply },
+          ]);
+        } else {
+          setMessages((msgs) => [
+            ...msgs,
+            { role: "assistant", content: `Error: ${r.error.message}` },
+          ]);
+        }
+        setLoading(false);
+      });
   }
 
   if (error) {
@@ -125,7 +130,7 @@ export function App() {
             <Text dimColor>{conversationId}</Text>
           )}
         </Box>
-        <Text dimColor>⌘S settings · ⌘T new · q quit</Text>
+        <Text dimColor>^S settings · ^N new · q quit</Text>
       </Box>
 
       {/* Message area — takes all remaining space */}

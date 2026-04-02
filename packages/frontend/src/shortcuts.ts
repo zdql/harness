@@ -23,20 +23,33 @@ interface Key {
   delete: boolean;
 }
 
-/** Try to match a keypress to a global action. Returns null if no match. */
-export function matchShortcut(input: string, key: Key): Action | null {
-  // Cmd+S → open settings
-  if (key.meta && input === "s") return { type: "open_settings" };
+interface MatchOptions {
+  /** When true, single-key shortcuts like `q` are suppressed. */
+  promptFocused?: boolean;
+}
 
-  // Cmd+T → new conversation
-  if (key.meta && input === "t") return { type: "new_conversation" };
+/** Try to match a keypress to a global action. Returns null if no match. */
+export function matchShortcut(
+  input: string,
+  key: Key,
+  opts: MatchOptions = {},
+): Action | null {
+  // Ctrl+S → open settings (Ctrl passes through terminals; ⌘ does not)
+  if (key.ctrl && input === "s") return { type: "open_settings" };
+
+  // Ctrl+N → new conversation
+  if (key.ctrl && input === "n") return { type: "new_conversation" };
 
   // Esc → close overlay (if one is open; app decides whether to consume)
   if (key.escape) return { type: "close_overlay" };
 
-  // Ctrl+C or q → quit
+  // Ctrl+C → quit (always works)
   if (key.ctrl && input === "c") return { type: "quit" };
-  if (input === "q" && !key.ctrl && !key.meta) return { type: "quit" };
+
+  // q → quit only when prompt is not focused (so it doesn't eat typing)
+  if (input === "q" && !key.ctrl && !key.meta && !opts.promptFocused) {
+    return { type: "quit" };
+  }
 
   return null;
 }
