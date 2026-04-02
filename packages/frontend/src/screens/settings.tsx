@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// screens/settings.tsx — Settings overlay (opened via Cmd+S)
+// screens/settings.tsx — Settings overlay (opened via Ctrl+S)
 // ---------------------------------------------------------------------------
 
 import React, { useEffect, useState } from "react";
@@ -16,49 +16,82 @@ interface Props {
 
 type Tab = "general" | "conversations";
 
-const SETTING_FIELDS = ["model"] as const;
+// Valid OpenRouter model IDs (provider/model format)
+const AVAILABLE_MODELS = [
+  "openai/gpt-4o",
+  "openai/gpt-4o-mini",
+  "openai/gpt-4.1",
+  "openai/gpt-4.1-mini",
+  "openai/gpt-4.1-nano",
+  "openai/o4-mini",
+  "anthropic/claude-sonnet-4",
+  "anthropic/claude-haiku-4",
+  "google/gemini-2.5-pro-preview",
+  "google/gemini-2.5-flash-preview",
+  "google/gemini-2.0-flash-001",
+  "deepseek/deepseek-chat-v3-0324",
+  "deepseek/deepseek-r1",
+  "meta-llama/llama-4-maverick",
+  "meta-llama/llama-4-scout",
+] as const;
 
 export function SettingsScreen({ client, onClose, onSwitchConversation }: Props) {
   const [tab, setTab] = useState<Tab>("general");
   const [settings, setSettings] = useState<GetResult | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(0);
-  const [editing, setEditing] = useState(false);
-  const [editBuffer, setEditBuffer] = useState("");
+  const [pickingModel, setPickingModel] = useState(false);
+  const [modelIdx, setModelIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    client.call("settings.get", {}).then(setSettings).catch(e => setError(String(e)));
-    client.call("conversation.list", {}).then(r => setConversations(r.conversations)).catch(e => setError(String(e)));
+    client.call("settings.get", {}).then(r => {
+      if (r.ok) setSettings(r.value);
+      else setError(r.error.message);
+    });
+    client.call("conversation.list", {}).then(r => {
+      if (r.ok) setConversations(r.value.conversations);
+      else setError(r.error.message);
+    });
   }, []);
 
-  const items = tab === "general" ? SETTING_FIELDS : conversations.map(c => c.id);
-  const maxIdx = items.length - 1;
+  // Sync modelIdx to the currently-selected model when opening the picker
+  function openModelPicker() {
+    const current = settings?.model;
+    const idx = current ? AVAILABLE_MODELS.indexOf(current as typeof AVAILABLE_MODELS[number]) : -1;
+    setModelIdx(idx >= 0 ? idx : 0);
+    setPickingModel(true);
+  }
 
   useInput((input, key) => {
-    // Editing mode
-    if (editing) {
-      if (key.return) {
-        const field = SETTING_FIELDS[selectedIdx]!;
-        const value = editBuffer.trim() || undefined;
-        setEditing(false);
-        client
-          .call("settings.update", { [field]: value })
-          .then(setSettings)
-          .catch(e => setError(String(e)));
+    // Model picker mode
+    if (pickingModel) {
+      if (key.upArrow || input === "k") {
+        setModelIdx(i => Math.max(0, i - 1));
+      } else if (key.downArrow || input === "j") {
+        setModelIdx(i => Math.min(AVAILABLE_MODELS.length - 1, i + 1));
+      } else if (key.return) {
+        const model = AVAILABLE_MODELS[modelIdx]!;
+        setPickingModel(false);
+        client.call("settings.update", { model }).then(r => {
+          if (r.ok) setSettings(r.value);
+          else setError(r.error.message);
+        });
       } else if (key.escape) {
-        setEditing(false);
-      } else if (key.backspace || key.delete) {
-        setEditBuffer(b => b.slice(0, -1));
-      } else if (input && !key.ctrl && !key.meta) {
-        setEditBuffer(b => b + input);
+        setPickingModel(false);
       }
       return;
     }
 
     // Tab switching
-    if (key.meta && input === "1") { setTab("general"); setSelectedIdx(0); return; }
-    if (key.meta && input === "2") { setTab("conversations"); setSelectedIdx(0); return; }
+    if (key.ctrl && input === "1") { setTab("general"); setSelectedIdx(0); return; }
+    if (key.ctrl && input === "2") { setTab("conversations"); setSelectedIdx(0); return; }
+    // Also support 1/2 keys directly when not in a text field
+    if (input === "1" && !key.ctrl && !key.meta) { setTab("general"); setSelectedIdx(0); return; }
+    if (input === "2" && !key.ctrl && !key.meta) { setTab("conversations"); setSelectedIdx(0); return; }
+
+    const items = tab === "general" ? ["model"] : conversations.map(c => c.id);
+    const maxIdx = items.length - 1;
 
     // Navigation
     if (key.upArrow || input === "k") {
@@ -67,9 +100,7 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
       setSelectedIdx(i => Math.min(maxIdx, i + 1));
     } else if (key.return || input === "e") {
       if (tab === "general") {
-        const field = SETTING_FIELDS[selectedIdx]!;
-        setEditBuffer(settings?.[field] ?? "");
-        setEditing(true);
+        openModelPicker();
       } else if (tab === "conversations") {
         const conv = conversations[selectedIdx];
         if (conv) {
@@ -92,30 +123,45 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
     <Box flexDirection="column" padding={1} borderStyle="round" borderColor="yellow">
       <Box marginBottom={1} gap={2}>
         <Text bold underline={tab === "general"} color={tab === "general" ? "cyan" : undefined}>
-          General (⌘1)
+          General (1)
         </Text>
         <Text bold underline={tab === "conversations"} color={tab === "conversations" ? "cyan" : undefined}>
-          Conversations (⌘2)
+          Conversations (2)
         </Text>
       </Box>
 
       {tab === "general" && settings && (
         <>
-          {SETTING_FIELDS.map((field, idx) => {
-            const isSelected = idx === selectedIdx;
-            const value = settings[field];
-            return (
-              <Box key={field} gap={1}>
-                <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "▸" : " "}</Text>
-                <Text bold color={isSelected ? "cyan" : undefined}>{field}:</Text>
-                {editing && isSelected ? (
-                  <Text color="yellow">{editBuffer}█</Text>
-                ) : (
-                  <Text dimColor={value === null}>{value ?? "(not set)"}</Text>
-                )}
-              </Box>
-            );
-          })}
+          {pickingModel ? (
+            <Box flexDirection="column">
+              <Text bold>Select model:</Text>
+              {AVAILABLE_MODELS.map((m, idx) => {
+                const isSelected = idx === modelIdx;
+                const isCurrent = m === settings.model;
+                return (
+                  <Box key={m} gap={1}>
+                    <Text color={isSelected ? "cyan" : undefined}>
+                      {isSelected ? "▸" : " "}
+                    </Text>
+                    <Text color={isSelected ? "cyan" : undefined}>
+                      {m}
+                    </Text>
+                    {isCurrent && <Text dimColor>(current)</Text>}
+                  </Box>
+                );
+              })}
+            </Box>
+          ) : (
+            <Box gap={1}>
+              <Text color={selectedIdx === 0 ? "cyan" : undefined}>
+                {selectedIdx === 0 ? "▸" : " "}
+              </Text>
+              <Text bold color={selectedIdx === 0 ? "cyan" : undefined}>model:</Text>
+              <Text dimColor={settings.model === null}>
+                {settings.model ?? "(not set)"}
+              </Text>
+            </Box>
+          )}
         </>
       )}
 
@@ -139,8 +185,8 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
 
       <Box marginTop={1}>
         <Text dimColor>
-          {editing
-            ? "Enter = save · Esc = cancel"
+          {pickingModel
+            ? "↑↓/jk = navigate · Enter = select · Esc = cancel"
             : "↑↓/jk = navigate · Enter = select · Esc = close"}
         </Text>
       </Box>

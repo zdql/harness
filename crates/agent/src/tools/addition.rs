@@ -29,7 +29,8 @@ impl Tool for AdditionTool {
                         "a": { "type": "number", "description": "First number" },
                         "b": { "type": "number", "description": "Second number" }
                     },
-                    "required": ["a", "b"]
+                    "required": ["a", "b"],
+                    "additionalProperties": false
                 })),
                 strict: Some(true),
             },
