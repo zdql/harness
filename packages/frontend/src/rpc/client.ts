@@ -10,6 +10,7 @@ import { spawn, type Subprocess, type FileSink } from "bun";
 import { resolve } from "path";
 import type { JsonRpcRequest, JsonRpcResponse, RequestId } from "./protocol.ts";
 import type { MethodName, MethodRegistry } from "./methods/index.ts";
+import { ok, err, type Result, type RpcError } from "./result.ts";
 
 export interface RpcClientOptions {
   /** Path to the harness-server binary. Defaults to the cargo debug build. */
@@ -22,10 +23,7 @@ export class RpcClient {
   private nextId = 1;
   private pending = new Map<
     RequestId,
-    {
-      resolve: (value: unknown) => void;
-      reject: (error: Error) => void;
-    }
+    (result: Result<unknown, RpcError>) => void
   >();
   private buffer = "";
   private encoder = new TextEncoder();
@@ -53,15 +51,18 @@ export class RpcClient {
   /**
    * Call an RPC method with full type safety.
    *
+   * Returns a `Result` — never throws.
+   *
    * ```ts
-   * const settings = await client.call("settings.get", {});
-   * //    ^? SettingsGetResult
+   * const result = await client.call("settings.get", {});
+   * if (result.ok) console.log(result.value);
+   * else console.log(result.error.message);
    * ```
    */
   async call<M extends MethodName>(
     method: M,
     params: MethodRegistry[M]["params"]
-  ): Promise<MethodRegistry[M]["result"]> {
+  ): Promise<Result<MethodRegistry[M]["result"], RpcError>> {
     const id = this.nextId++;
 
     const request: JsonRpcRequest<MethodRegistry[M]["params"]> = {
@@ -71,12 +72,9 @@ export class RpcClient {
       params,
     };
 
-    const promise = new Promise<MethodRegistry[M]["result"]>(
-      (resolve, reject) => {
-        this.pending.set(id, {
-          resolve: resolve as (value: unknown) => void,
-          reject,
-        });
+    const promise = new Promise<Result<MethodRegistry[M]["result"], RpcError>>(
+      (resolve) => {
+        this.pending.set(id, resolve as (result: Result<unknown, RpcError>) => void);
       }
     );
 
@@ -88,7 +86,7 @@ export class RpcClient {
       const entry = this.pending.get(id);
       if (entry) {
         this.pending.delete(id);
-        entry.reject(new Error(`failed to write to server: ${e}`));
+        entry(err({ code: -1, message: `failed to write to server: ${e}` }));
       }
     }
 
@@ -131,17 +129,15 @@ export class RpcClient {
 
           try {
             const msg = JSON.parse(line) as JsonRpcResponse;
-            const entry = this.pending.get(msg.id);
-            if (!entry) continue;
+            const settle = this.pending.get(msg.id);
+            if (!settle) continue;
 
             this.pending.delete(msg.id);
 
             if (msg.error) {
-              entry.reject(
-                new Error(`RPC error ${msg.error.code}: ${msg.error.message}`)
-              );
+              settle(err({ code: msg.error.code, message: msg.error.message }));
             } else {
-              entry.resolve(msg.result);
+              settle(ok(msg.result));
             }
           } catch {
             // Skip malformed lines
