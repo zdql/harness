@@ -5,6 +5,9 @@
 export { RpcClient } from "./client.ts";
 export type { RpcClientOptions } from "./client.ts";
 
+export { ok, err } from "./result.ts";
+export type { Result, Ok, Err, RpcError } from "./result.ts";
+
 export type {
   JsonRpcRequest,
   JsonRpcResponse,
