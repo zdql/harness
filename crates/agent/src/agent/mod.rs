@@ -1,3 +1,4 @@
+use crate::context::ContextBudget;
 use crate::conversation::{self, Conversation};
 use crate::llm::{
     AssistantContent, AssistantMessage, ChatClient, ChatCompletionMessage, ChatError,
@@ -117,11 +118,20 @@ pub async fn run<S: ConversationStore>(
         };
 
         // 7. Execute each tool call and push tool result messages.
+        let budget = ContextBudget::for_model(conv.model.as_deref());
+        let tool_defs_for_budget = tools.definitions();
+
         for call in calls {
-            let result = match tools.call(&call.function.name, &call.function.arguments) {
+            let raw_result = match tools.call(&call.function.name, &call.function.arguments) {
                 Ok(val) => val.to_string(),
                 Err(e) => format!("{{\"error\": \"{e}\"}}"),
             };
+
+            let result = budget.guard_tool_result(
+                &conv.messages,
+                &tool_defs_for_budget,
+                &raw_result,
+            );
 
             executed_tool_calls.push(ToolCallInfo {
                 name: call.function.name.clone(),
