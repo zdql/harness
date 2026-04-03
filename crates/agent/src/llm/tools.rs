@@ -53,10 +53,35 @@ pub struct FunctionDefinition {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_parameters_opt"
+    )]
     pub parameters: Option<JsonValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+}
+
+/// Serializes tool parameters, always injecting `"additionalProperties": false`
+/// on object schemas. This prevents the class of bug where strict-mode tool
+/// calls are rejected by providers that require this field.
+fn serialize_parameters_opt<S>(value: &Option<JsonValue>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(v) => {
+            let mut v = v.clone();
+            if let Some(obj) = v.as_object_mut() {
+                if obj.get("type").and_then(|t| t.as_str()) == Some("object") {
+                    obj.entry("additionalProperties")
+                        .or_insert(JsonValue::Bool(false));
+                }
+            }
+            v.serialize(serializer)
+        }
+        None => serializer.serialize_none(),
+    }
 }
 
 // ---------------------------------------------------------------------------

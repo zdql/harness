@@ -15,6 +15,7 @@ use serde_json::Value;
 /// A JSON-RPC 2.0 request (always sent from the frontend → server).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Request {
+    #[allow(dead_code)]
     pub jsonrpc: String,
     pub id: RequestId,
     pub method: String,
@@ -61,7 +62,6 @@ pub struct RpcError {
 // ---- Standard error codes -------------------------------------------------
 
 pub const PARSE_ERROR: i32 = -32700;
-pub const INVALID_REQUEST: i32 = -32600;
 pub const METHOD_NOT_FOUND: i32 = -32601;
 pub const INVALID_PARAMS: i32 = -32602;
 pub const INTERNAL_ERROR: i32 = -32603;
@@ -92,12 +92,3 @@ impl Response {
     }
 }
 
-impl Notification {
-    pub fn new(method: impl Into<String>, params: Value) -> Self {
-        Self {
-            jsonrpc: "2.0".into(),
-            method: method.into(),
-            params,
-        }
-    }
-}

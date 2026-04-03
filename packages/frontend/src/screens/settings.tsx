@@ -83,12 +83,13 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
       return;
     }
 
-    // Tab switching
+    // Tab switching — number keys or left/right arrows
     if (key.ctrl && input === "1") { setTab("general"); setSelectedIdx(0); return; }
     if (key.ctrl && input === "2") { setTab("conversations"); setSelectedIdx(0); return; }
-    // Also support 1/2 keys directly when not in a text field
     if (input === "1" && !key.ctrl && !key.meta) { setTab("general"); setSelectedIdx(0); return; }
     if (input === "2" && !key.ctrl && !key.meta) { setTab("conversations"); setSelectedIdx(0); return; }
+    if (key.leftArrow) { setTab("general"); setSelectedIdx(0); return; }
+    if (key.rightArrow) { setTab("conversations"); setSelectedIdx(0); return; }
 
     const items = tab === "general" ? ["model"] : conversations.map(c => c.id);
     const maxIdx = items.length - 1;
@@ -175,7 +176,10 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
               return (
                 <Box key={conv.id} gap={1}>
                   <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "▸" : " "}</Text>
-                  <Text color={isSelected ? "cyan" : undefined}>{conv.id}</Text>
+                  <Text color={isSelected ? "cyan" : undefined}>
+                    {conv.title ?? conv.id}
+                  </Text>
+                  {conv.title && <Text dimColor>({conv.id})</Text>}
                 </Box>
               );
             })
@@ -186,8 +190,8 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
       <Box marginTop={1}>
         <Text dimColor>
           {pickingModel
-            ? "↑↓/jk = navigate · Enter = select · Esc = cancel"
-            : "↑↓/jk = navigate · Enter = select · Esc = close"}
+            ? "↑↓ = navigate · Enter = select · Esc = cancel"
+            : "←→ = tabs · ↑↓ = navigate · Enter = select · Esc = close"}
         </Text>
       </Box>
     </Box>

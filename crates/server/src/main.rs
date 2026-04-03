@@ -100,6 +100,9 @@ async fn dispatch(req: Request, state: &Arc<ServerState>) -> Response {
         conversation::Switch::NAME => {
             handle::<conversation::Switch, _>(req, handlers::conversation::switch)
         }
+        conversation::Get::NAME => {
+            handle::<conversation::Get, _>(req, handlers::conversation::get)
+        }
         conversation::Send::NAME => {
             let state = Arc::clone(state);
             let id = req.id.clone();

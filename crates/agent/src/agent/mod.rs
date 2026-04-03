@@ -37,6 +37,21 @@ impl<SE: std::error::Error> From<ChatError> for RunError<SE> {
 // Core agent loop
 // ---------------------------------------------------------------------------
 
+/// Info about a tool call that was executed during the agent loop.
+#[derive(Debug, Clone)]
+pub struct ToolCallInfo {
+    pub name: String,
+    pub arguments: String,
+    pub result: String,
+}
+
+/// The result of an agent run: final text reply + any tool calls that were executed.
+#[derive(Debug)]
+pub struct RunResult {
+    pub reply: String,
+    pub tool_calls: Vec<ToolCallInfo>,
+}
+
 /// Append a user message, then loop: call the LLM, execute any tool calls,
 /// feed results back, and repeat until the model produces a final text answer.
 pub async fn run<S: ConversationStore>(
@@ -45,10 +60,12 @@ pub async fn run<S: ConversationStore>(
     conv: &mut Conversation,
     tools: &ToolRegistry,
     input: &str,
-) -> Result<String, RunError<S::Error>> {
+) -> Result<RunResult, RunError<S::Error>> {
     // 1. Push user message & persist.
     conv.push_user(input);
     conversation::save(store, conv).map_err(RunError::Storage)?;
+
+    let mut executed_tool_calls: Vec<ToolCallInfo> = Vec::new();
 
     loop {
         // 2. Build request with tool definitions.
@@ -96,7 +113,7 @@ pub async fn run<S: ConversationStore>(
         // 6. If no tool calls, we're done — return the final text.
         let calls = match tool_calls {
             Some(ref calls) if !calls.is_empty() => calls,
-            _ => return Ok(text),
+            _ => return Ok(RunResult { reply: text, tool_calls: executed_tool_calls }),
         };
 
         // 7. Execute each tool call and push tool result messages.
@@ -105,6 +122,12 @@ pub async fn run<S: ConversationStore>(
                 Ok(val) => val.to_string(),
                 Err(e) => format!("{{\"error\": \"{e}\"}}"),
             };
+
+            executed_tool_calls.push(ToolCallInfo {
+                name: call.function.name.clone(),
+                arguments: call.function.arguments.clone(),
+                result: result.clone(),
+            });
 
             conv.push_message(ChatCompletionMessage::Tool(ToolMessage {
                 content: StringOrTextParts::String(result),

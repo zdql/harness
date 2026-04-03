@@ -2,12 +2,15 @@
 // handlers::conversation — Conversation CRUD + agent send handlers
 // ---------------------------------------------------------------------------
 
+use std::sync::Arc;
+
 use crate::rpc::methods::conversation::{
-    CreateParams, CreateResult, ListParams, ListResult, ConversationSummary,
-    SwitchParams, SwitchResult, SendParams, SendResult,
+    CreateParams, CreateResult, GetParams, GetResult, ListParams, ListResult,
+    ConversationSummary, MessageEntry, SwitchParams, SwitchResult, SendParams,
+    SendResult, ToolCallInfo,
 };
 use crate::ServerState;
-use agent::conversation::{self, Conversation};
+use agent::conversation::{self, summarize, Conversation};
 use storage::fs::FsStore;
 use storage::ConversationStore;
 
@@ -37,14 +40,25 @@ pub fn create(_params: CreateParams) -> Result<CreateResult, String> {
     Ok(CreateResult { id })
 }
 
-/// Handle `conversation.list` — list all conversations, most recent first.
+/// Handle `conversation.list` — list conversations with >1 message, most recent first.
 pub fn list(_params: ListParams) -> Result<ListResult, String> {
     let store = store()?;
     let ids = store.list().map_err(|e| format!("failed to list: {e}"))?;
-    let conversations = ids
-        .into_iter()
-        .map(|id| ConversationSummary { id })
-        .collect();
+
+    let mut conversations = Vec::new();
+    for id in ids {
+        let meta = store.load_metadata(&id).map_err(|e| format!("failed to load metadata: {e}"))?;
+        let msgs = store.load_messages(&id).map_err(|e| format!("failed to load messages: {e}"))?;
+
+        // Skip conversations that never had a real exchange
+        if msgs.len() <= 1 {
+            continue;
+        }
+
+        let title = meta["title"].as_str().map(String::from);
+        conversations.push(ConversationSummary { id, title });
+    }
+
     Ok(ListResult { conversations })
 }
 
@@ -63,12 +77,74 @@ pub fn switch(params: SwitchParams) -> Result<SwitchResult, String> {
     Ok(SwitchResult { id: params.id })
 }
 
+/// Handle `conversation.get` — load a conversation's messages for display.
+pub fn get(params: GetParams) -> Result<GetResult, String> {
+    let store = store()?;
+    let conv = conversation::load(&store, &params.id)
+        .map_err(|e| format!("failed to load conversation: {e}"))?;
+
+    let messages = conv
+        .messages
+        .iter()
+        .filter_map(|msg| match msg {
+            agent::llm::ChatCompletionMessage::User(u) => {
+                let text = match &u.content {
+                    agent::llm::UserContent::String(s) => s.clone(),
+                    _ => return None,
+                };
+                Some(MessageEntry {
+                    role: "user".to_string(),
+                    content: text,
+                    tool_name: None,
+                    tool_args: None,
+                })
+            }
+            agent::llm::ChatCompletionMessage::Assistant(a) => {
+                // If this assistant message has tool calls but no text, skip it
+                // (it's an intermediate step, the tool results follow)
+                let text = match a.content.as_ref()? {
+                    agent::llm::AssistantContent::String(s) => s.clone(),
+                    _ => return None,
+                };
+                if text.is_empty() {
+                    return None;
+                }
+                Some(MessageEntry {
+                    role: "assistant".to_string(),
+                    content: text,
+                    tool_name: None,
+                    tool_args: None,
+                })
+            }
+            agent::llm::ChatCompletionMessage::Tool(t) => {
+                let content = match &t.content {
+                    agent::llm::StringOrTextParts::String(s) => s.clone(),
+                    _ => return None,
+                };
+                Some(MessageEntry {
+                    role: "tool".to_string(),
+                    content,
+                    tool_name: None,
+                    tool_args: None,
+                })
+            }
+            _ => None,
+        })
+        .collect();
+
+    Ok(GetResult {
+        id: conv.id,
+        title: conv.title,
+        messages,
+    })
+}
+
 /// Handle `conversation.send` — send a user message through the agent loop.
 ///
 /// This is the core integration point: it loads the conversation from disk,
 /// runs the agent loop (LLM calls + tool execution), persists the result,
 /// and returns the assistant's final text reply.
-pub async fn send(params: SendParams, state: &ServerState) -> Result<SendResult, String> {
+pub async fn send(params: SendParams, state: &Arc<ServerState>) -> Result<SendResult, String> {
     let store = store()?;
 
     // Load the conversation (or error if it doesn't exist)
@@ -84,7 +160,7 @@ pub async fn send(params: SendParams, state: &ServerState) -> Result<SendResult,
     }
 
     // Run the agent loop — this calls the LLM, executes tools, and loops
-    let reply = agent::agent::run(
+    let result = agent::agent::run(
         &state.chat_client,
         &store,
         &mut conv,
@@ -94,7 +170,34 @@ pub async fn send(params: SendParams, state: &ServerState) -> Result<SendResult,
     .await
     .map_err(|e| format!("agent error: {e}"))?;
 
-    Ok(SendResult { reply })
+    // Spawn background summarization if needed
+    if conv.needs_summarization() {
+        let client = state.chat_client.clone();
+        let conv_clone = conv.clone();
+        tokio::spawn(async move {
+            match summarize::summarize(&client, &conv_clone).await {
+                Ok(title) => {
+                    if let Ok(fs) = FsStore::new() {
+                        if let Ok(mut fresh) = conversation::load(&fs, &conv_clone.id) {
+                            fresh.title = Some(title);
+                            fresh.title_set_at_message_count = fresh.messages.len();
+                            let _ = fs.save_metadata(&fresh.id, &fresh.metadata());
+                        }
+                    }
+                }
+                Err(e) => eprintln!("summarize failed: {e}"),
+            }
+        });
+    }
+
+    Ok(SendResult {
+        reply: result.reply,
+        tool_calls: result.tool_calls.into_iter().map(|tc| ToolCallInfo {
+            name: tc.name,
+            arguments: tc.arguments,
+            result: tc.result,
+        }).collect(),
+    })
 }
 
 // ---------------------------------------------------------------------------

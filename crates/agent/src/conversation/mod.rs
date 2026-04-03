@@ -1,3 +1,5 @@
+pub mod summarize;
+
 use serde::{Deserialize, Serialize};
 
 use crate::llm::{ChatCompletionMessage, UserContent, UserMessage};
@@ -10,6 +12,10 @@ use crate::llm::{ChatCompletionMessage, UserContent, UserMessage};
 pub struct Conversation {
     pub id: String,
     pub model: Option<String>,
+    pub title: Option<String>,
+    /// Message count when the title was last generated.
+    #[serde(default)]
+    pub title_set_at_message_count: usize,
     pub created_at: i64,
     pub updated_at: i64,
     pub messages: Vec<ChatCompletionMessage>,
@@ -21,6 +27,8 @@ impl Conversation {
         Self {
             id: id.into(),
             model: None,
+            title: None,
+            title_set_at_message_count: 0,
             created_at: now,
             updated_at: now,
             messages: Vec::new(),
@@ -52,9 +60,24 @@ impl Conversation {
         serde_json::json!({
             "id": self.id,
             "model": self.model,
+            "title": self.title,
+            "title_set_at_message_count": self.title_set_at_message_count,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         })
+    }
+
+    /// Whether this conversation needs a (re-)summarization.
+    /// First title after any messages, then re-title every 4 messages.
+    pub fn needs_summarization(&self) -> bool {
+        let count = self.messages.len();
+        if count == 0 {
+            return false;
+        }
+        if self.title.is_none() {
+            return true;
+        }
+        count >= self.title_set_at_message_count + 4
     }
 }
 
@@ -93,6 +116,8 @@ pub fn load<S: ConversationStore>(
     Ok(Conversation {
         id: meta["id"].as_str().unwrap_or(id).to_string(),
         model: meta["model"].as_str().map(String::from),
+        title: meta["title"].as_str().map(String::from),
+        title_set_at_message_count: meta["title_set_at_message_count"].as_u64().unwrap_or(0) as usize,
         created_at: meta["created_at"].as_i64().unwrap_or(0),
         updated_at: meta["updated_at"].as_i64().unwrap_or(0),
         messages,
