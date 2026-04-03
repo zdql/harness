@@ -47,6 +47,7 @@ pub struct ListResult {
 #[derive(serde::Serialize)]
 pub struct ConversationSummary {
     pub id: String,
+    pub title: Option<String>,
 }
 
 // ===========================================================================
@@ -69,6 +70,41 @@ pub struct SwitchParams {
 #[derive(serde::Serialize)]
 pub struct SwitchResult {
     pub id: String,
+}
+
+// ===========================================================================
+// conversation.get
+// ===========================================================================
+
+pub struct Get;
+
+impl RpcMethod for Get {
+    const NAME: &'static str = "conversation.get";
+    type Params = GetParams;
+    type Result = GetResult;
+}
+
+#[derive(serde::Deserialize)]
+pub struct GetParams {
+    pub id: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct GetResult {
+    pub id: String,
+    pub title: Option<String>,
+    pub messages: Vec<MessageEntry>,
+}
+
+/// A simplified message for the frontend.
+#[derive(serde::Serialize)]
+pub struct MessageEntry {
+    pub role: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_args: Option<String>,
 }
 
 // ===========================================================================
@@ -95,4 +131,14 @@ pub struct SendParams {
 pub struct SendResult {
     /// The assistant's final text reply.
     pub reply: String,
+    /// Tool calls that were executed during the agent loop.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallInfo>,
+}
+
+#[derive(serde::Serialize)]
+pub struct ToolCallInfo {
+    pub name: String,
+    pub arguments: String,
+    pub result: String,
 }

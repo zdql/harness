@@ -16,6 +16,7 @@ export interface ListResult {
 
 export interface ConversationSummary {
   id: string;
+  title?: string;
 }
 
 export interface SwitchParams {
@@ -26,6 +27,23 @@ export interface SwitchResult {
   id: string;
 }
 
+export interface GetParams {
+  id: string;
+}
+
+export interface GetResult {
+  id: string;
+  title?: string;
+  messages: MessageEntry[];
+}
+
+export interface MessageEntry {
+  role: string;
+  content: string;
+  tool_name?: string;
+  tool_args?: string;
+}
+
 export interface SendParams {
   id: string;
   message: string;
@@ -33,4 +51,11 @@ export interface SendParams {
 
 export interface SendResult {
   reply: string;
+  tool_calls?: ToolCallInfo[];
+}
+
+export interface ToolCallInfo {
+  name: string;
+  arguments: string;
+  result: string;
 }

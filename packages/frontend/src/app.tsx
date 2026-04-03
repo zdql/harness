@@ -22,10 +22,13 @@ import { ConversationScreen } from "./screens/conversation.tsx";
 import { SettingsScreen } from "./screens/settings.tsx";
 import { PromptInput } from "./components/prompt-input.tsx";
 import { matchShortcut } from "./shortcuts.ts";
+import { isMouseSequence } from "./hooks/mouse-filter.ts";
 
 interface Message {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool";
   content: string;
+  toolName?: string;
+  toolArgs?: string;
 }
 
 export function App() {
@@ -58,6 +61,8 @@ export function App() {
 
   // Global shortcuts
   useInput((input, key) => {
+    if (isMouseSequence(input)) return;
+
     const action = matchShortcut(input, key, { promptFocused });
     if (!action) return;
 
@@ -69,15 +74,7 @@ export function App() {
         if (showSettings) setShowSettings(false);
         break;
       case "new_conversation":
-        client.call("conversation.create", {}).then((r) => {
-          if (r.ok) {
-            setConversationId(r.value.id);
-            setMessages([]);
-            setShowSettings(false);
-          } else {
-            setError(r.error.message);
-          }
-        });
+        createNewConversation();
         break;
       case "quit":
         client.close();
@@ -86,8 +83,26 @@ export function App() {
     }
   });
 
+  function createNewConversation() {
+    client.call("conversation.create", {}).then((r) => {
+      if (r.ok) {
+        setConversationId(r.value.id);
+        setMessages([]);
+        setShowSettings(false);
+      } else {
+        setError(r.error.message);
+      }
+    });
+  }
+
   function handleSubmit(text: string) {
     if (!conversationId || loading) return;
+
+    // Handle slash commands
+    if (text === "/clear") {
+      createNewConversation();
+      return;
+    }
 
     setMessages((msgs) => [...msgs, { role: "user", content: text }]);
     setLoading(true);
@@ -96,10 +111,21 @@ export function App() {
       .call("conversation.send", { id: conversationId, message: text })
       .then((r) => {
         if (r.ok) {
-          setMessages((msgs) => [
-            ...msgs,
+          const newMessages: Message[] = [
             { role: "assistant", content: r.value.reply },
-          ]);
+          ];
+          // Prepend tool call messages if any
+          if (r.value.tool_calls && r.value.tool_calls.length > 0) {
+            for (const tc of r.value.tool_calls) {
+              newMessages.unshift({
+                role: "tool",
+                content: tc.result,
+                toolName: tc.name,
+                toolArgs: tc.arguments,
+              });
+            }
+          }
+          setMessages((msgs) => [...msgs, ...newMessages]);
         } else {
           setMessages((msgs) => [
             ...msgs,
@@ -138,6 +164,7 @@ export function App() {
         <ConversationScreen
           conversationId={conversationId}
           messages={messages}
+          availableHeight={terminalHeight - 5}
         />
       ) : (
         <Box flexGrow={1} justifyContent="center" alignItems="center">
@@ -153,6 +180,19 @@ export function App() {
           onSwitchConversation={(id) => {
             setConversationId(id);
             setMessages([]);
+            // Load existing messages from the conversation
+            client.call("conversation.get", { id }).then((r) => {
+              if (r.ok) {
+                setMessages(
+                  r.value.messages.map((m) => ({
+                    role: m.role as Message["role"],
+                    content: m.content,
+                    toolName: m.tool_name,
+                    toolArgs: m.tool_args,
+                  }))
+                );
+              }
+            });
           }}
         />
       )}

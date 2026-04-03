@@ -48,6 +48,10 @@ export interface MethodRegistry {
     params: Conversation.SwitchParams;
     result: Conversation.SwitchResult;
   };
+  "conversation.get": {
+    params: Conversation.GetParams;
+    result: Conversation.GetResult;
+  };
   "conversation.send": {
     params: Conversation.SendParams;
     result: Conversation.SendResult;

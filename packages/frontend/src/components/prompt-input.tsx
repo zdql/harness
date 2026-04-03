@@ -1,12 +1,14 @@
 // ---------------------------------------------------------------------------
 // components/prompt-input.tsx — Text input fixed at the bottom of the screen
 //
-// Handles character input, backspace, and submit (Enter).
-// The parent controls focus via `isActive`.
+// Handles character input, backspace, submit, line-editing shortcuts, and
+// paste. Mouse escape sequence fragments are filtered out.
 // ---------------------------------------------------------------------------
 
 import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { isMouseSequence } from "../hooks/mouse-filter.ts";
+import { matchEditShortcut, deleteWord } from "../hooks/line-editing.ts";
 
 interface Props {
   isActive: boolean;
@@ -34,16 +36,38 @@ export function PromptInput({ isActive, onSubmit }: Props) {
         return;
       }
 
+      // Line-editing shortcuts (Ctrl+U, Ctrl+W, Option+Backspace, etc.)
+      const edit = matchEditShortcut(input, key);
+      if (edit) {
+        switch (edit.type) {
+          case "clear_line":
+            setBuffer("");
+            break;
+          case "delete_word":
+            setBuffer((b) => deleteWord(b));
+            break;
+        }
+        return;
+      }
+
       if (key.backspace || key.delete) {
         setBuffer((b) => b.slice(0, -1));
         return;
       }
 
-      // Ignore control sequences
-      if (key.ctrl || key.meta || key.escape) return;
+      // Ignore remaining control sequences
+      if (key.ctrl || key.escape) return;
 
       if (input) {
-        setBuffer((b) => b + input);
+        // Drop mouse escape sequence fragments
+        if (isMouseSequence(input)) return;
+
+        // Accept single characters (typing) and multi-character strings
+        // (paste from terminal). Filter non-printable chars from paste.
+        const printable = input.replace(/[\x00-\x1F\x7F]/g, "");
+        if (printable) {
+          setBuffer((b) => b + printable);
+        }
       }
     },
     { isActive }
