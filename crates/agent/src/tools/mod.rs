@@ -1,6 +1,16 @@
 mod addition;
+mod bash;
+mod glob_tool;
+mod grep;
+mod read;
+mod write;
 
 pub use addition::AdditionTool;
+pub use bash::BashTool;
+pub use glob_tool::GlobTool;
+pub use grep::GrepTool;
+pub use read::ReadTool;
+pub use write::WriteTool;
 
 use serde_json::Value as JsonValue;
 

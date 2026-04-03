@@ -18,7 +18,7 @@ use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
 use agent::llm::ChatClient;
-use agent::tools::{AdditionTool, ToolRegistry};
+use agent::tools::{AdditionTool, BashTool, GlobTool, GrepTool, ReadTool, ToolRegistry, WriteTool};
 use rpc::methods::RpcMethod;
 use rpc::{Request, Response, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
 
@@ -47,7 +47,13 @@ async fn main() {
 
     let state = Arc::new(ServerState {
         chat_client: ChatClient::new(&api_key).with_title("harness"),
-        tools: ToolRegistry::new().register(AdditionTool),
+        tools: ToolRegistry::new()
+            .register(AdditionTool)
+            .register(BashTool)
+            .register(ReadTool)
+            .register(WriteTool)
+            .register(GlobTool)
+            .register(GrepTool),
     });
 
     let stdin = io::stdin().lock();
