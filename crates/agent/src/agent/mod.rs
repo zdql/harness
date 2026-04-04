@@ -1,5 +1,5 @@
 use crate::context::ContextBudget;
-use crate::conversation::{self, Conversation};
+use crate::conversation::{self, compaction, Conversation};
 use crate::llm::{
     AssistantContent, AssistantMessage, ChatClient, ChatCompletionMessage, ChatError,
     CreateChatCompletionRequest, StringOrTextParts, ToolMessage,
@@ -144,6 +144,15 @@ pub async fn run<S: ConversationStore>(
                 tool_call_id: call.id.clone(),
             }));
             conversation::save(store, conv).map_err(RunError::Storage)?;
+        }
+
+        // 8. Check whether context compaction is needed before the next round.
+        let budget = ContextBudget::for_model(conv.model.as_deref());
+        let tool_defs_for_check = tools.definitions();
+        if compaction::needs_compaction(&budget, &conv.messages, &tool_defs_for_check) {
+            // Best-effort: if compaction fails we just continue with the full
+            // context and hope the next round stays within limits.
+            let _ = compaction::compact(client, store, conv).await;
         }
 
         // Loop back to step 2 — the model will see the tool results and continue.
