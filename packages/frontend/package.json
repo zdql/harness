@@ -1,19 +1,19 @@
 {
   "name": "frontend",
-  "module": "src/index.tsx",
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun run src/index.tsx",
+    "dev": "tsx src/index.tsx",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "ink": "^6.8.0",
+    "ink": "npm:@jrichman/ink@6.6.7",
     "react": "^19.2.4"
   },
   "devDependencies": {
-    "@types/bun": "latest",
-    "@types/react": "^19.2.14"
+    "@types/node": "^22",
+    "@types/react": "^19.2.14",
+    "tsx": "^4"
   },
   "peerDependencies": {
     "typescript": "^5"
