@@ -2,8 +2,9 @@ use crate::context::ContextBudget;
 use crate::conversation::{self, compaction, Conversation};
 use crate::llm::{
     AssistantContent, AssistantMessage, ChatClient, ChatCompletionMessage, ChatError,
-    CreateChatCompletionRequest, StringOrTextParts, ToolMessage,
+    CreateChatCompletionRequest, StringOrTextParts, SystemMessage, ToolMessage,
 };
+use crate::prompts;
 use crate::tools::ToolRegistry;
 use storage::ConversationStore;
 
@@ -70,10 +71,18 @@ pub async fn run<S: ConversationStore>(
 
     loop {
         // 2. Build request with tool definitions.
+        //    Prepend the system prompt so the model always sees it first.
         let tool_defs = tools.definitions();
+        let mut messages = Vec::with_capacity(1 + conv.messages.len());
+        messages.push(ChatCompletionMessage::System(SystemMessage {
+            content: StringOrTextParts::String(prompts::SYSTEM_PROMPT.to_string()),
+            name: None,
+        }));
+        messages.extend(conv.messages.iter().cloned());
+
         let request = CreateChatCompletionRequest {
             model: conv.model.clone(),
-            messages: conv.messages.clone(),
+            messages,
             tools: if tool_defs.is_empty() {
                 None
             } else {
