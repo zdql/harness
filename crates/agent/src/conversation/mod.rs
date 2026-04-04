@@ -1,3 +1,4 @@
+pub mod compaction;
 pub mod summarize;
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,14 @@ pub struct Conversation {
     pub created_at: i64,
     pub updated_at: i64,
     pub messages: Vec<ChatCompletionMessage>,
+    /// Absolute indices (into the on-disk .jsonl) where compaction boundary
+    /// messages were inserted. The most recent entry is the active compaction.
+    #[serde(default)]
+    pub compaction_indices: Vec<usize>,
+    /// The absolute index of the first element of `messages` relative to the
+    /// full on-disk .jsonl. Zero when no compaction has occurred.
+    #[serde(default)]
+    pub message_offset: usize,
 }
 
 impl Conversation {
@@ -32,6 +41,8 @@ impl Conversation {
             created_at: now,
             updated_at: now,
             messages: Vec::new(),
+            compaction_indices: Vec::new(),
+            message_offset: 0,
         }
     }
 
@@ -55,6 +66,11 @@ impl Conversation {
         self.updated_at = now_unix();
     }
 
+    /// The total number of messages on disk (offset + in-memory length).
+    pub fn absolute_len(&self) -> usize {
+        self.message_offset + self.messages.len()
+    }
+
     /// Metadata envelope for storage (everything except messages).
     pub fn metadata(&self) -> serde_json::Value {
         serde_json::json!({
@@ -64,6 +80,8 @@ impl Conversation {
             "title_set_at_message_count": self.title_set_at_message_count,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "compaction_indices": self.compaction_indices,
+            "message_offset": self.message_offset,
         })
     }
 
@@ -101,6 +119,10 @@ pub fn save<S: ConversationStore>(
 }
 
 /// Load a conversation from storage by id.
+///
+/// If compactions have occurred, only messages from the most recent compaction
+/// boundary onward are loaded into `messages`. The full history remains on
+/// disk in the .jsonl file, untouched.
 pub fn load<S: ConversationStore>(
     store: &S,
     id: &str,
@@ -108,10 +130,27 @@ pub fn load<S: ConversationStore>(
     let meta = store.load_metadata(id)?;
     let raw_msgs = store.load_messages(id)?;
 
-    let messages: Vec<ChatCompletionMessage> = raw_msgs
+    let all_messages: Vec<ChatCompletionMessage> = raw_msgs
         .into_iter()
         .filter_map(|v| serde_json::from_value(v).ok())
         .collect();
+
+    let compaction_indices: Vec<usize> = meta["compaction_indices"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_u64().map(|n| n as usize))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Slice from the most recent compaction boundary, or load everything.
+    let (messages, message_offset) = if let Some(&last_idx) = compaction_indices.last() {
+        let offset = last_idx.min(all_messages.len());
+        (all_messages[offset..].to_vec(), offset)
+    } else {
+        (all_messages, 0)
+    };
 
     Ok(Conversation {
         id: meta["id"].as_str().unwrap_or(id).to_string(),
@@ -121,6 +160,8 @@ pub fn load<S: ConversationStore>(
         created_at: meta["created_at"].as_i64().unwrap_or(0),
         updated_at: meta["updated_at"].as_i64().unwrap_or(0),
         messages,
+        compaction_indices,
+        message_offset,
     })
 }
 
