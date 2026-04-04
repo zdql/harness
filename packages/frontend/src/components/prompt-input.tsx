@@ -1,18 +1,43 @@
 // ---------------------------------------------------------------------------
 // components/prompt-input.tsx — Text input fixed at the bottom of the screen
 //
-// Handles character input, backspace, submit, line-editing shortcuts, and
-// paste. Mouse escape sequence fragments are filtered out.
+// Uses the custom keypress system (adapted from Gemini CLI) for reliable
+// modifier detection via Kitty keyboard protocol. Supports multi-line editing:
+//   Shift+Enter / Ctrl+Enter / Alt+Enter   Insert newline
+//   Enter                                   Submit
+//   Ctrl+U                                  Clear to start of line
+//   Ctrl+K                                  Clear to end of line
+//   Ctrl+W / Ctrl+Backspace / Alt+Backspace Delete word backward
+//   Ctrl+Delete / Alt+Delete / Alt+D        Delete word forward
+//   Backspace                               Delete character
 // ---------------------------------------------------------------------------
 
-import React, { useState } from "react";
-import { Box, Text, useInput } from "ink";
-import { isMouseSequence } from "../hooks/mouse-filter.ts";
-import { matchEditShortcut, deleteWord } from "../hooks/line-editing.ts";
+import React, { useState, useCallback } from "react";
+import { Box, Text } from "ink";
+import {
+  useKeypress,
+  keyMatchers,
+  Command,
+  type Key,
+} from "../input/index.ts";
 
 interface Props {
   isActive: boolean;
   onSubmit: (text: string) => void;
+}
+
+/** Delete the last word from a string (whitespace-delimited). */
+function deleteWordBackward(text: string): string {
+  const trimmed = text.replace(/\s+$/, "");
+  const lastSpace = trimmed.lastIndexOf(" ");
+  if (lastSpace === -1) return "";
+  return trimmed.slice(0, lastSpace + 1);
+}
+
+/** Delete the first word after cursor (simplified: operates on full buffer). */
+function deleteWordForward(text: string): string {
+  // For a simple end-of-line buffer, this is a no-op
+  return text;
 }
 
 export function PromptInput({ isActive, onSubmit }: Props) {
@@ -25,71 +50,113 @@ export function PromptInput({ isActive, onSubmit }: Props) {
     return () => clearInterval(interval);
   }, []);
 
-  useInput(
-    (input, key) => {
-      if (key.return) {
+  const handler = useCallback(
+    (key: Key): boolean | void => {
+      // Newline (Shift+Enter, Ctrl+Enter, Alt+Enter, Ctrl+J)
+      if (keyMatchers[Command.NEWLINE](key)) {
+        setBuffer((b) => b + "\n");
+        return true;
+      }
+
+      // Submit (Enter)
+      if (keyMatchers[Command.SUBMIT](key)) {
         const text = buffer.trim();
         if (text) {
           onSubmit(text);
           setBuffer("");
         }
-        return;
+        return true;
       }
 
-      // Line-editing shortcuts (Ctrl+U, Ctrl+W, Option+Backspace, etc.)
-      const edit = matchEditShortcut(input, key);
-      if (edit) {
-        switch (edit.type) {
-          case "clear_line":
-            setBuffer("");
-            break;
-          case "delete_word":
-            setBuffer((b) => deleteWord(b));
-            break;
-        }
-        return;
+      // Kill line left (Ctrl+U)
+      if (keyMatchers[Command.KILL_LINE_LEFT](key)) {
+        setBuffer("");
+        return true;
       }
 
-      if (key.backspace || key.delete) {
+      // Kill line right (Ctrl+K)
+      if (keyMatchers[Command.KILL_LINE_RIGHT](key)) {
+        setBuffer("");
+        return true;
+      }
+
+      // Delete word backward (Ctrl+Backspace, Alt+Backspace, Ctrl+W)
+      if (keyMatchers[Command.DELETE_WORD_BACKWARD](key)) {
+        setBuffer((b) => deleteWordBackward(b));
+        return true;
+      }
+
+      // Delete word forward (Ctrl+Delete, Alt+Delete, Alt+D)
+      if (keyMatchers[Command.DELETE_WORD_FORWARD](key)) {
+        setBuffer((b) => deleteWordForward(b));
+        return true;
+      }
+
+      // Delete character left
+      if (keyMatchers[Command.DELETE_CHAR_LEFT](key)) {
         setBuffer((b) => b.slice(0, -1));
-        return;
+        return true;
       }
 
-      // Ignore remaining control sequences
-      if (key.ctrl || key.escape) return;
-
-      if (input) {
-        // Drop mouse escape sequence fragments
-        if (isMouseSequence(input)) return;
-
-        // Accept single characters (typing) and multi-character strings
-        // (paste from terminal). Filter non-printable chars from paste.
-        const printable = input.replace(/[\x00-\x1F\x7F]/g, "");
-        if (printable) {
-          setBuffer((b) => b + printable);
-        }
+      // Delete character right
+      if (keyMatchers[Command.DELETE_CHAR_RIGHT](key)) {
+        // no-op for end-of-buffer cursor
+        return true;
       }
+
+      // Paste event (from bracketed paste)
+      if (key.name === "paste") {
+        setBuffer((b) => b + key.sequence);
+        return true;
+      }
+
+      // Ignore remaining control/escape sequences
+      if (key.ctrl || key.cmd || key.name === "escape") return false;
+
+      // Accept printable input
+      if (key.insertable && key.sequence.length >= 1) {
+        setBuffer((b) => b + key.sequence);
+        return true;
+      }
+
+      return false;
     },
-    { isActive }
+    [buffer, onSubmit],
   );
 
-  const cursor = cursorVisible ? "█" : " ";
+  useKeypress(handler, { isActive });
+
+  const cursor = cursorVisible ? "\u2588" : " ";
+  const lines = buffer.split("\n");
+  const isMultiLine = lines.length > 1;
 
   return (
     <Box
       borderStyle="round"
       borderColor={isActive ? "green" : "gray"}
       paddingX={1}
+      flexDirection="column"
     >
-      <Text color="green" bold>
-        {"❯ "}
-      </Text>
-      <Text>
-        {buffer}
-        {isActive ? <Text color="green">{cursor}</Text> : null}
-      </Text>
-      {!buffer && isActive && (
-        <Text dimColor>Type a message...</Text>
+      <Box>
+        <Text color="green" bold>
+          {"\u276F "}
+        </Text>
+        <Box flexDirection="column">
+          {lines.map((line, i) => (
+            <Text key={i}>
+              {line}
+              {i === lines.length - 1 && isActive ? (
+                <Text color="green">{cursor}</Text>
+              ) : null}
+            </Text>
+          ))}
+        </Box>
+        {!buffer && isActive && (
+          <Text dimColor>Type a message...</Text>
+        )}
+      </Box>
+      {isMultiLine && (
+        <Text dimColor>Enter to submit · Shift+Enter for newline</Text>
       )}
     </Box>
   );

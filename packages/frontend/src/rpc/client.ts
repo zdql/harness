@@ -6,11 +6,14 @@
 // types via the MethodRegistry.
 // ---------------------------------------------------------------------------
 
-import { spawn, type Subprocess, type FileSink } from "bun";
-import { resolve } from "path";
+import { spawn, type ChildProcess } from "node:child_process";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { JsonRpcRequest, JsonRpcResponse, RequestId } from "./protocol.ts";
 import type { MethodName, MethodRegistry } from "./methods/index.ts";
 import { ok, err, type Result, type RpcError } from "./result.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export interface RpcClientOptions {
   /** Path to the harness-server binary. Defaults to the cargo debug build. */
@@ -18,32 +21,51 @@ export interface RpcClientOptions {
 }
 
 export class RpcClient {
-  private process: Subprocess;
-  private stdin: FileSink;
+  private process: ChildProcess;
   private nextId = 1;
   private pending = new Map<
     RequestId,
     (result: Result<unknown, RpcError>) => void
   >();
   private buffer = "";
-  private encoder = new TextEncoder();
 
   constructor(opts: RpcClientOptions = {}) {
     const bin =
       opts.serverBin ??
-      resolve(import.meta.dir, "../../../../target/debug/harness-server");
+      resolve(__dirname, "../../../../target/debug/harness-server");
 
-    this.process = spawn([bin], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "inherit", // let server debug logs pass through
+    this.process = spawn(bin, [], {
+      stdio: ["pipe", "pipe", "inherit"],
     });
 
-    // Bun gives us a FileSink for piped stdin
-    this.stdin = this.process.stdin as FileSink;
+    this.process.stdout!.setEncoding("utf-8");
+    this.process.stdout!.on("data", (chunk: string) => {
+      this.buffer += chunk;
 
-    // Read stdout line-by-line and resolve pending calls
-    this.readLoop();
+      let newlineIdx: number;
+      while ((newlineIdx = this.buffer.indexOf("\n")) !== -1) {
+        const line = this.buffer.slice(0, newlineIdx).trim();
+        this.buffer = this.buffer.slice(newlineIdx + 1);
+
+        if (line.length === 0) continue;
+
+        try {
+          const msg = JSON.parse(line) as JsonRpcResponse;
+          const settle = this.pending.get(msg.id);
+          if (!settle) continue;
+
+          this.pending.delete(msg.id);
+
+          if (msg.error) {
+            settle(err({ code: msg.error.code, message: msg.error.message }));
+          } else {
+            settle(ok(msg.result));
+          }
+        } catch {
+          // Skip malformed lines
+        }
+      }
+    });
   }
 
   // ---- Public API ---------------------------------------------------------
@@ -52,12 +74,6 @@ export class RpcClient {
    * Call an RPC method with full type safety.
    *
    * Returns a `Result` — never throws.
-   *
-   * ```ts
-   * const result = await client.call("settings.get", {});
-   * if (result.ok) console.log(result.value);
-   * else console.log(result.error.message);
-   * ```
    */
   async call<M extends MethodName>(
     method: M,
@@ -80,8 +96,7 @@ export class RpcClient {
 
     const line = JSON.stringify(request) + "\n";
     try {
-      this.stdin.write(this.encoder.encode(line));
-      this.stdin.flush();
+      this.process.stdin!.write(line);
     } catch (e) {
       const entry = this.pending.get(id);
       if (entry) {
@@ -96,56 +111,10 @@ export class RpcClient {
   /** Gracefully shut down the server process. */
   close(): void {
     try {
-      this.stdin.end();
+      this.process.stdin!.end();
     } catch {
       // stdin may already be closed
     }
     this.process.kill();
-  }
-
-  // ---- Internal -----------------------------------------------------------
-
-  private async readLoop(): Promise<void> {
-    const stdout = this.process.stdout;
-    if (!stdout) return;
-
-    const reader = (stdout as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        this.buffer += decoder.decode(value, { stream: true });
-
-        // Process complete lines
-        let newlineIdx: number;
-        while ((newlineIdx = this.buffer.indexOf("\n")) !== -1) {
-          const line = this.buffer.slice(0, newlineIdx).trim();
-          this.buffer = this.buffer.slice(newlineIdx + 1);
-
-          if (line.length === 0) continue;
-
-          try {
-            const msg = JSON.parse(line) as JsonRpcResponse;
-            const settle = this.pending.get(msg.id);
-            if (!settle) continue;
-
-            this.pending.delete(msg.id);
-
-            if (msg.error) {
-              settle(err({ code: msg.error.code, message: msg.error.message }));
-            } else {
-              settle(ok(msg.result));
-            }
-          } catch {
-            // Skip malformed lines
-          }
-        }
-      }
-    } catch {
-      // Stream ended
-    }
   }
 }

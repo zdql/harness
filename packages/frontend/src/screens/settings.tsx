@@ -2,11 +2,18 @@
 // screens/settings.tsx — Settings overlay (opened via Ctrl+S)
 // ---------------------------------------------------------------------------
 
-import React, { useEffect, useState } from "react";
-import { Box, Text, useInput } from "ink";
+import React, { useEffect, useState, useCallback } from "react";
+import { Box, Text } from "ink";
 import type { RpcClient } from "../rpc/index.ts";
 import type { GetResult } from "../rpc/methods/settings.ts";
 import type { ConversationSummary } from "../rpc/methods/conversation.ts";
+import {
+  useKeypress,
+  KeypressPriority,
+  keyMatchers,
+  Command,
+  type Key,
+} from "../input/index.ts";
 
 interface Props {
   client: RpcClient;
@@ -55,7 +62,6 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
     });
   }, []);
 
-  // Sync modelIdx to the currently-selected model when opening the picker
   function openModelPicker() {
     const current = settings?.model;
     const idx = current ? AVAILABLE_MODELS.indexOf(current as typeof AVAILABLE_MODELS[number]) : -1;
@@ -63,53 +69,88 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
     setPickingModel(true);
   }
 
-  useInput((input, key) => {
-    // Model picker mode
-    if (pickingModel) {
-      if (key.upArrow || input === "k") {
-        setModelIdx(i => Math.max(0, i - 1));
-      } else if (key.downArrow || input === "j") {
-        setModelIdx(i => Math.min(AVAILABLE_MODELS.length - 1, i + 1));
-      } else if (key.return) {
-        const model = AVAILABLE_MODELS[modelIdx]!;
-        setPickingModel(false);
-        client.call("settings.update", { model }).then(r => {
-          if (r.ok) setSettings(r.value);
-          else setError(r.error.message);
-        });
-      } else if (key.escape) {
-        setPickingModel(false);
-      }
-      return;
-    }
-
-    // Tab switching — number keys or left/right arrows
-    if (key.ctrl && input === "1") { setTab("general"); setSelectedIdx(0); return; }
-    if (key.ctrl && input === "2") { setTab("conversations"); setSelectedIdx(0); return; }
-    if (input === "1" && !key.ctrl && !key.meta) { setTab("general"); setSelectedIdx(0); return; }
-    if (input === "2" && !key.ctrl && !key.meta) { setTab("conversations"); setSelectedIdx(0); return; }
-    if (key.leftArrow) { setTab("general"); setSelectedIdx(0); return; }
-    if (key.rightArrow) { setTab("conversations"); setSelectedIdx(0); return; }
-
-    const items = tab === "general" ? ["model"] : conversations.map(c => c.id);
-    const maxIdx = items.length - 1;
-
-    // Navigation
-    if (key.upArrow || input === "k") {
-      setSelectedIdx(i => Math.max(0, i - 1));
-    } else if (key.downArrow || input === "j") {
-      setSelectedIdx(i => Math.min(maxIdx, i + 1));
-    } else if (key.return || input === "e") {
-      if (tab === "general") {
-        openModelPicker();
-      } else if (tab === "conversations") {
-        const conv = conversations[selectedIdx];
-        if (conv) {
-          onSwitchConversation(conv.id);
-          onClose();
+  const handler = useCallback(
+    (key: Key): boolean | void => {
+      // Model picker mode
+      if (pickingModel) {
+        if (keyMatchers[Command.DIALOG_UP](key)) {
+          setModelIdx(i => Math.max(0, i - 1));
+          return true;
         }
+        if (keyMatchers[Command.DIALOG_DOWN](key)) {
+          setModelIdx(i => Math.min(AVAILABLE_MODELS.length - 1, i + 1));
+          return true;
+        }
+        if (keyMatchers[Command.DIALOG_SELECT](key)) {
+          const model = AVAILABLE_MODELS[modelIdx]!;
+          setPickingModel(false);
+          client.call("settings.update", { model }).then(r => {
+            if (r.ok) setSettings(r.value);
+            else setError(r.error.message);
+          });
+          return true;
+        }
+        if (keyMatchers[Command.DIALOG_DISMISS](key)) {
+          setPickingModel(false);
+          return true;
+        }
+        return false;
       }
-    }
+
+      // Tab switching
+      if (key.name === "1" && !key.ctrl && !key.cmd) {
+        setTab("general");
+        setSelectedIdx(0);
+        return true;
+      }
+      if (key.name === "2" && !key.ctrl && !key.cmd) {
+        setTab("conversations");
+        setSelectedIdx(0);
+        return true;
+      }
+      if (keyMatchers[Command.MOVE_LEFT](key)) {
+        setTab("general");
+        setSelectedIdx(0);
+        return true;
+      }
+      if (keyMatchers[Command.MOVE_RIGHT](key)) {
+        setTab("conversations");
+        setSelectedIdx(0);
+        return true;
+      }
+
+      const items = tab === "general" ? ["model"] : conversations.map(c => c.id);
+      const maxIdx = items.length - 1;
+
+      if (keyMatchers[Command.DIALOG_UP](key)) {
+        setSelectedIdx(i => Math.max(0, i - 1));
+        return true;
+      }
+      if (keyMatchers[Command.DIALOG_DOWN](key)) {
+        setSelectedIdx(i => Math.min(maxIdx, i + 1));
+        return true;
+      }
+      if (keyMatchers[Command.DIALOG_SELECT](key) || key.name === "e") {
+        if (tab === "general") {
+          openModelPicker();
+        } else if (tab === "conversations") {
+          const conv = conversations[selectedIdx];
+          if (conv) {
+            onSwitchConversation(conv.id);
+            onClose();
+          }
+        }
+        return true;
+      }
+
+      return false;
+    },
+    [pickingModel, modelIdx, tab, selectedIdx, conversations, settings, client, onClose, onSwitchConversation],
+  );
+
+  useKeypress(handler, {
+    isActive: true,
+    priority: KeypressPriority.Critical,
   });
 
   if (error) {
@@ -142,7 +183,7 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
                 return (
                   <Box key={m} gap={1}>
                     <Text color={isSelected ? "cyan" : undefined}>
-                      {isSelected ? "▸" : " "}
+                      {isSelected ? "\u25B8" : " "}
                     </Text>
                     <Text color={isSelected ? "cyan" : undefined}>
                       {m}
@@ -155,7 +196,7 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
           ) : (
             <Box gap={1}>
               <Text color={selectedIdx === 0 ? "cyan" : undefined}>
-                {selectedIdx === 0 ? "▸" : " "}
+                {selectedIdx === 0 ? "\u25B8" : " "}
               </Text>
               <Text bold color={selectedIdx === 0 ? "cyan" : undefined}>model:</Text>
               <Text dimColor={settings.model === null}>
@@ -175,7 +216,7 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
               const isSelected = idx === selectedIdx;
               return (
                 <Box key={conv.id} gap={1}>
-                  <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "▸" : " "}</Text>
+                  <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "\u25B8" : " "}</Text>
                   <Text color={isSelected ? "cyan" : undefined}>
                     {conv.title ?? conv.id}
                   </Text>
@@ -190,8 +231,8 @@ export function SettingsScreen({ client, onClose, onSwitchConversation }: Props)
       <Box marginTop={1}>
         <Text dimColor>
           {pickingModel
-            ? "↑↓ = navigate · Enter = select · Esc = cancel"
-            : "←→ = tabs · ↑↓ = navigate · Enter = select · Esc = close"}
+            ? "\u2191\u2193 = navigate \u00B7 Enter = select \u00B7 Esc = cancel"
+            : "\u2190\u2192 = tabs \u00B7 \u2191\u2193 = navigate \u00B7 Enter = select \u00B7 Esc = close"}
         </Text>
       </Box>
     </Box>

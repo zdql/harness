@@ -8,21 +8,21 @@
 //   │                                        │
 //   ├─ prompt input (fixed height) ──────────┤
 //   └─ status bar ───────────────────────────┘
-//
-// - Boots into a new conversation automatically
-// - Ctrl+S toggles settings overlay
-// - Ctrl+N creates a new conversation
-// - Esc closes any overlay
 // ---------------------------------------------------------------------------
 
-import React, { useEffect, useState } from "react";
-import { Box, Text, useApp, useInput, useStdout } from "ink";
+import React, { useEffect, useState, useCallback } from "react";
+import { Box, Text, useApp, useStdout } from "ink";
 import { RpcClient } from "./rpc/index.ts";
 import { ConversationScreen } from "./screens/conversation.tsx";
 import { SettingsScreen } from "./screens/settings.tsx";
 import { PromptInput } from "./components/prompt-input.tsx";
-import { matchShortcut } from "./shortcuts.ts";
-import { isMouseSequence } from "./hooks/mouse-filter.ts";
+import {
+  KeypressProvider,
+  KeypressPriority,
+  useKeypress,
+  keyMatchers,
+  Command,
+} from "./input/index.ts";
 
 interface Message {
   role: "user" | "assistant" | "tool";
@@ -31,7 +31,7 @@ interface Message {
   toolArgs?: string;
 }
 
-export function App() {
+function AppInner() {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const terminalHeight = stdout?.rows ?? 24;
@@ -42,6 +42,7 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scrollOffset, setScrollOffset] = useState(0);
 
   // Create a new conversation on boot
   useEffect(() => {
@@ -54,34 +55,17 @@ export function App() {
       }
     });
 
-    return () => client.close();
+    return () => {
+      client.close();
+    };
   }, [client]);
 
+  // Auto-scroll to bottom on new messages or conversation change
+  useEffect(() => {
+    setScrollOffset(0);
+  }, [messages.length, conversationId]);
+
   const promptFocused = !showSettings && !loading;
-
-  // Global shortcuts
-  useInput((input, key) => {
-    if (isMouseSequence(input)) return;
-
-    const action = matchShortcut(input, key, { promptFocused });
-    if (!action) return;
-
-    switch (action.type) {
-      case "open_settings":
-        setShowSettings((s) => !s);
-        break;
-      case "close_overlay":
-        if (showSettings) setShowSettings(false);
-        break;
-      case "new_conversation":
-        createNewConversation();
-        break;
-      case "quit":
-        client.close();
-        exit();
-        break;
-    }
-  });
 
   function createNewConversation() {
     client.call("conversation.create", {}).then((r) => {
@@ -95,10 +79,70 @@ export function App() {
     });
   }
 
+  // Global shortcuts (high priority — always active)
+  const globalHandler = useCallback(
+    (key: import("./input/index.ts").Key) => {
+      if (keyMatchers[Command.TOGGLE_SETTINGS](key)) {
+        setShowSettings((s) => !s);
+        return true;
+      }
+
+      if (keyMatchers[Command.NEW_CONVERSATION](key)) {
+        createNewConversation();
+        return true;
+      }
+
+      if (keyMatchers[Command.ESCAPE](key)) {
+        if (showSettings) {
+          setShowSettings(false);
+          return true;
+        }
+      }
+
+      if (keyMatchers[Command.QUIT](key)) {
+        client.close();
+        exit();
+        return true;
+      }
+
+      // Scroll via Shift+Up/Down
+      if (keyMatchers[Command.SCROLL_UP](key)) {
+        setScrollOffset((s) => s + 3);
+        return true;
+      }
+      if (keyMatchers[Command.SCROLL_DOWN](key)) {
+        setScrollOffset((s) => Math.max(0, s - 3));
+        return true;
+      }
+      if (keyMatchers[Command.PAGE_UP](key)) {
+        setScrollOffset((s) => s + (terminalHeight - 6));
+        return true;
+      }
+      if (keyMatchers[Command.PAGE_DOWN](key)) {
+        setScrollOffset((s) => Math.max(0, s - (terminalHeight - 6)));
+        return true;
+      }
+
+      // q → quit (only when prompt not focused)
+      if (key.name === "q" && !key.ctrl && !key.cmd && !key.alt && !promptFocused) {
+        client.close();
+        exit();
+        return true;
+      }
+
+      return false;
+    },
+    [showSettings, promptFocused, client, exit, terminalHeight],
+  );
+
+  useKeypress(globalHandler, {
+    isActive: true,
+    priority: KeypressPriority.High,
+  });
+
   function handleSubmit(text: string) {
     if (!conversationId || loading) return;
 
-    // Handle slash commands
     if (text === "/clear") {
       createNewConversation();
       return;
@@ -114,7 +158,6 @@ export function App() {
           const newMessages: Message[] = [
             { role: "assistant", content: r.value.reply },
           ];
-          // Prepend tool call messages if any
           if (r.value.tool_calls && r.value.tool_calls.length > 0) {
             for (const tc of r.value.tool_calls) {
               newMessages.unshift({
@@ -152,19 +195,18 @@ export function App() {
           <Text bold color="green">
             harness
           </Text>
-          {conversationId && (
-            <Text dimColor>{conversationId}</Text>
-          )}
+          {conversationId && <Text dimColor>{conversationId}</Text>}
         </Box>
         <Text dimColor>^S settings · ^N new · q quit</Text>
       </Box>
 
-      {/* Message area — takes all remaining space */}
+      {/* Message area */}
       {conversationId ? (
         <ConversationScreen
           conversationId={conversationId}
           messages={messages}
-          availableHeight={terminalHeight - 5}
+          availableHeight={terminalHeight - 6}
+          scrollOffset={scrollOffset}
         />
       ) : (
         <Box flexGrow={1} justifyContent="center" alignItems="center">
@@ -172,7 +214,7 @@ export function App() {
         </Box>
       )}
 
-      {/* Settings overlay — rendered over the message area */}
+      {/* Settings overlay */}
       {showSettings && (
         <SettingsScreen
           client={client}
@@ -180,7 +222,6 @@ export function App() {
           onSwitchConversation={(id) => {
             setConversationId(id);
             setMessages([]);
-            // Load existing messages from the conversation
             client.call("conversation.get", { id }).then((r) => {
               if (r.ok) {
                 setMessages(
@@ -197,11 +238,11 @@ export function App() {
         />
       )}
 
-      {/* Prompt input — fixed at the bottom */}
+      {/* Prompt input */}
       <PromptInput isActive={!showSettings && !loading} onSubmit={handleSubmit} />
 
-      {/* Status bar */}
-      <Box paddingX={1}>
+      {/* Status bar with shortcuts */}
+      <Box paddingX={1} justifyContent="space-between">
         {loading ? (
           <Text color="yellow">Thinking...</Text>
         ) : (
@@ -209,7 +250,18 @@ export function App() {
             {messages.length} message{messages.length !== 1 ? "s" : ""}
           </Text>
         )}
+        <Text dimColor>
+          Shift+Enter newline · Opt+BS del word · ^U clear · /clear new chat
+        </Text>
       </Box>
     </Box>
+  );
+}
+
+export function App() {
+  return (
+    <KeypressProvider>
+      <AppInner />
+    </KeypressProvider>
   );
 }
