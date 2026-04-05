@@ -170,6 +170,7 @@ pub async fn run_with_events<S: ConversationStore>(
             tool_calls: tool_calls.clone(),
             function_call: None,
             audio: None,
+            reasoning_details: None,
         }));
         conversation::save(store, conv).map_err(RunError::Storage)?;
 

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 use super::common::{AssistantContent, StringOrTextParts, UserContent};
 use super::tools::{FunctionCall, ToolCall};
@@ -57,6 +58,12 @@ pub struct AssistantMessage {
     pub function_call: Option<FunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<AssistantAudioRef>,
+    /// OpenRouter: reasoning details from thinking models. Must be echoed
+    /// back on subsequent turns (esp. for Anthropic thinking + tool use) or
+    /// the API will reject the request. `#[serde(default)]` keeps older
+    /// stored conversations deserializable.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning_details: Option<Vec<JsonValue>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
