@@ -59,16 +59,38 @@ async function main(): Promise<void> {
     // is always the last entry in pending until the response lands.
     const completed: HistoryItemInput[] = [];
     let spinner: HistoryItemInput = { type: "thinking", label: "Thinking…" };
+    // Live-streamed reasoning text, reset on each new LLM call. Shown as the
+    // thinking spinner's label so the user sees the model's chain of thought
+    // as it arrives.
+    let reasoningBuf = "";
     const pushPending = () => historyStore.setPending([...completed, spinner]);
     pushPending();
+
+    // Tail of the reasoning buffer used as the spinner label. Keeps the UI
+    // stable-width by taking the last ~80 chars of the latest line.
+    const reasoningLabel = (): string => {
+      const lastLine = reasoningBuf.split("\n").filter(Boolean).pop() ?? "";
+      const trimmed = lastLine.length > 80 ? `…${lastLine.slice(-80)}` : lastLine;
+      return trimmed.length > 0 ? `Thinking… ${trimmed}` : "Thinking…";
+    };
 
     rpc.onNotification((method, params) => {
       if (method !== "agent.event") return;
       const ev = params as AgentEvent;
       switch (ev.kind) {
         case "llm_start":
+          reasoningBuf = "";
           spinner = { type: "thinking", label: "Thinking…" };
           pushPending();
+          break;
+        case "reasoning_delta":
+          reasoningBuf += ev.text;
+          spinner = { type: "thinking", label: reasoningLabel() };
+          pushPending();
+          break;
+        case "content_delta":
+          // Final reply is streaming in — keep the spinner generic; the
+          // assembled reply is committed once the RPC resolves.
           break;
         case "tool_call_start":
           spinner = { type: "tool-running", name: ev.name };
@@ -82,6 +104,7 @@ async function main(): Promise<void> {
           });
           // Reset to a thinking spinner — the agent is about to call the
           // LLM again (unless this was the last tool of the turn).
+          reasoningBuf = "";
           spinner = { type: "thinking", label: "Thinking…" };
           pushPending();
           break;
@@ -117,6 +140,8 @@ async function main(): Promise<void> {
   type AgentEvent =
     | { kind: "llm_start" }
     | { kind: "llm_end" }
+    | { kind: "reasoning_delta"; text: string }
+    | { kind: "content_delta"; text: string }
     | { kind: "tool_call_start"; name: string; arguments: string }
     | { kind: "tool_call_end"; name: string; result: string };
 
@@ -127,6 +152,7 @@ async function main(): Promise<void> {
         void onSubmit(text);
       }}
       placeholder="message the agent…"
+      rpc={rpc}
     />,
     { exitOnCtrlC: false },
   );
