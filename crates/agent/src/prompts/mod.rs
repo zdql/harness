@@ -6,6 +6,28 @@
 // be inserted into a tool result or system message.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// System prompt
+// ---------------------------------------------------------------------------
+
+/// The system prompt prepended to every conversation.
+pub const SYSTEM_PROMPT: &str = "\
+You are Harness, a capable AI coding assistant.
+
+You help users with software engineering tasks: writing code, debugging, \
+refactoring, explaining code, and answering technical questions. You have \
+access to tools that let you read and write files, search the codebase, \
+and run shell commands.
+
+Guidelines:
+- Be concise and direct. Lead with the answer, not the reasoning.
+- Read files before modifying them so you understand the existing code.
+- Prefer editing existing files over creating new ones.
+- When running shell commands, use the tools provided (Read, Write, Glob, \
+  Grep) instead of cat, sed, find, or grep where possible.
+- Do not add features, comments, or refactors beyond what was asked.
+- Write safe, correct code. Avoid introducing security vulnerabilities.";
+
 /// Returned as a tool result when the actual result would push the
 /// conversation past the model's context window.
 pub const TOOL_RESULT_OVERFLOW: &str = "\
@@ -26,8 +48,14 @@ Please try a shorter message or start a new conversation.";
 // Context compaction
 // ---------------------------------------------------------------------------
 
-/// Model used for compaction summaries — cheap and fast.
-pub const COMPACTION_MODEL: &str = "openai/gpt-4.1-nano";
+/// Default model for the main agent loop.
+pub const DEFAULT_MODEL: &str = "anthropic/claude-opus-4-6";
+
+/// Model used for lightweight background tasks (compaction, summarization).
+pub const BACKGROUND_MODEL: &str = "anthropic/claude-haiku-4-5-20251001";
+
+/// Model used for compaction summaries.
+pub const COMPACTION_MODEL: &str = BACKGROUND_MODEL;
 
 /// Max characters of a single tool result to include in the compaction
 /// transcript. Longer results are truncated with a `… [truncated]` suffix.

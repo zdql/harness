@@ -77,7 +77,7 @@ pub async fn summarize(
     let messages = build_messages(conv);
 
     let request = CreateChatCompletionRequest {
-        model: Some("openai/gpt-4.1-nano".to_string()),
+        model: Some(crate::prompts::BACKGROUND_MODEL.to_string()),
         messages,
         max_tokens: Some(30),
         temperature: Some(0.0),
