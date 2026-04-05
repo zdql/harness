@@ -288,6 +288,7 @@ mod tests {
                 tool_calls: None,
                 function_call: None,
                 audio: None,
+                reasoning_details: None,
             }),
         ];
         let transcript = render_transcript(&msgs);

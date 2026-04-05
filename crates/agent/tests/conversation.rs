@@ -102,6 +102,7 @@ fn make_assistant_msg(text: &str) -> ChatCompletionMessage {
         tool_calls: None,
         function_call: None,
         audio: None,
+        reasoning_details: None,
     })
 }
 

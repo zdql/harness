@@ -173,6 +173,7 @@ async fn test_tool_calling() {
                 tool_calls: Some(tool_calls.clone()),
                 function_call: None,
                 audio: None,
+                reasoning_details: None,
             }),
             ChatCompletionMessage::Tool(ToolMessage {
                 content: StringOrTextParts::String(
@@ -297,6 +298,7 @@ async fn test_multi_turn() {
                 tool_calls: None,
                 function_call: None,
                 audio: None,
+                reasoning_details: None,
             }),
             ChatCompletionMessage::User(UserMessage {
                 content: UserContent::String("What is my name?".to_string()),
