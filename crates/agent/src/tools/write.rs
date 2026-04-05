@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use std::fs;
@@ -5,7 +6,7 @@ use std::path::Path;
 
 use crate::llm::{ChatCompletionTool, FunctionDefinition};
 
-use super::{Tool, ToolError};
+use super::{run_blocking, Tool, ToolError};
 
 pub struct WriteTool;
 
@@ -15,6 +16,7 @@ struct Args {
     content: String,
 }
 
+#[async_trait]
 impl Tool for WriteTool {
     fn name(&self) -> &str {
         "write"
@@ -47,26 +49,29 @@ impl Tool for WriteTool {
         }
     }
 
-    fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
+    async fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
         let args: Args =
             serde_json::from_str(arguments).map_err(|e| ToolError(format!("bad args: {e}")))?;
 
-        let path = Path::new(&args.file_path);
+        run_blocking(move || {
+            let path = Path::new(&args.file_path);
 
-        // Create parent directories if they don't exist.
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| ToolError(format!("failed to create directories: {e}")))?;
-        }
+            // Create parent directories if they don't exist.
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| ToolError(format!("failed to create directories: {e}")))?;
+            }
 
-        fs::write(path, &args.content)
-            .map_err(|e| ToolError(format!("failed to write {}: {e}", args.file_path)))?;
+            fs::write(path, &args.content)
+                .map_err(|e| ToolError(format!("failed to write {}: {e}", args.file_path)))?;
 
-        let bytes = args.content.len();
+            let bytes = args.content.len();
 
-        Ok(json!({
-            "path": args.file_path,
-            "bytes_written": bytes
-        }))
+            Ok(json!({
+                "path": args.file_path,
+                "bytes_written": bytes
+            }))
+        })
+        .await
     }
 }

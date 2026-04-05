@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
@@ -13,6 +14,7 @@ struct Args {
     b: f64,
 }
 
+#[async_trait]
 impl Tool for AdditionTool {
     fn name(&self) -> &str {
         "addition"
@@ -37,7 +39,7 @@ impl Tool for AdditionTool {
         }
     }
 
-    fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
+    async fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
         let args: Args =
             serde_json::from_str(arguments).map_err(|e| ToolError(format!("bad args: {e}")))?;
         Ok(json!({ "result": args.a + args.b }))

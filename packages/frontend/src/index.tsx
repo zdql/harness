@@ -112,6 +112,26 @@ async function main(): Promise<void> {
           // No UI change on its own — we'll either see more tool calls or
           // the final response arrives next.
           break;
+        case "subagent_started":
+          completed.push({
+            type: "tool",
+            name: "start_subagent",
+            result: `started ${ev.subagent_id}: ${ev.task.slice(0, 80)}`,
+          });
+          pushPending();
+          break;
+        case "subagent_completed":
+          completed.push({
+            type: "tool",
+            name: `subagent ${ev.subagent_id}`,
+            result: `${ev.status}: ${ev.output.slice(0, 200)}`,
+          });
+          pushPending();
+          break;
+        case "subagent_event":
+          // Nested events from within a subagent are not shown inline today
+          // — a dedicated subagent panel is a follow-up task.
+          break;
       }
     });
 
@@ -143,7 +163,15 @@ async function main(): Promise<void> {
     | { kind: "reasoning_delta"; text: string }
     | { kind: "content_delta"; text: string }
     | { kind: "tool_call_start"; name: string; arguments: string }
-    | { kind: "tool_call_end"; name: string; result: string };
+    | { kind: "tool_call_end"; name: string; result: string }
+    | { kind: "subagent_started"; subagent_id: string; task: string }
+    | {
+        kind: "subagent_completed";
+        subagent_id: string;
+        status: string;
+        output: string;
+      }
+    | { kind: "subagent_event"; subagent_id: string; inner: AgentEvent };
 
   // 4. Render. exitOnCtrlC:false — our GlobalKeyHandler owns the quit path.
   const instance = render(

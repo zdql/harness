@@ -1,10 +1,11 @@
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use std::process::Command;
 
 use crate::llm::{ChatCompletionTool, FunctionDefinition};
 
-use super::{Tool, ToolError};
+use super::{run_blocking, Tool, ToolError};
 
 pub struct BashTool;
 
@@ -13,6 +14,7 @@ struct Args {
     command: String,
 }
 
+#[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {
         "bash"
@@ -45,26 +47,29 @@ impl Tool for BashTool {
         }
     }
 
-    fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
+    async fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
         let args: Args =
             serde_json::from_str(arguments).map_err(|e| ToolError(format!("bad args: {e}")))?;
 
-        let output = Command::new("bash")
-            .arg("-c")
-            .arg(&args.command)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .map_err(|e| ToolError(format!("failed to run command: {e}")))?;
+        run_blocking(move || {
+            let output = Command::new("bash")
+                .arg("-c")
+                .arg(&args.command)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .map_err(|e| ToolError(format!("failed to run command: {e}")))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let exit_code = output.status.code().unwrap_or(-1);
 
-        Ok(json!({
-            "stdout": stdout,
-            "stderr": stderr,
-            "exit_code": exit_code
-        }))
+            Ok(json!({
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code
+            }))
+        })
+        .await
     }
 }

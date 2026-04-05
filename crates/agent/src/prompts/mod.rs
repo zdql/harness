@@ -10,6 +10,30 @@
 // System prompt
 // ---------------------------------------------------------------------------
 
+/// Build the full system prompt, optionally appending a per-conversation
+/// scratch-directory directive. Callers pass the conversation's scratch dir
+/// so the agent prefers it over `/tmp` or other global locations.
+pub fn build_system_prompt(scratch_dir: Option<&std::path::Path>) -> String {
+    let mut s = SYSTEM_PROMPT.to_string();
+    if let Some(dir) = scratch_dir {
+        s.push_str(&format!(
+            "\n\n## Temp directory\n\n\
+             For any temporary or throwaway files — scripts you write \
+             to run a computation, intermediate data, scratch notes, \
+             downloaded artifacts, etc. — put them under \
+             `{}`. DO NOT use the global `/tmp`, `/var/tmp`, or other \
+             system temp directories. This tmp directory is scoped to \
+             the current conversation and lives alongside the \
+             conversation's own data, so everything stays organized and \
+             gets cleaned up together. When you need to write a file, \
+             always prefer this tmp directory unless the user has asked \
+             you to write somewhere specific.",
+            dir.display()
+        ));
+    }
+    s
+}
+
 /// The system prompt prepended to every conversation.
 pub const SYSTEM_PROMPT: &str = "\
 You are Harness, a capable AI coding assistant.
@@ -47,7 +71,49 @@ Guidelines:
   them concurrently. For example, reading three unrelated files or \
   running two independent greps should be a single batched turn, not \
   three sequential turns. Only chain tool calls sequentially when a \
-  later call genuinely depends on the output of an earlier one.";
+  later call genuinely depends on the output of an earlier one.
+
+## Subagents
+
+You can spawn subagents via the `start_subagent` tool to work on focused \
+subtasks in parallel. A subagent runs concurrently — `start_subagent` \
+returns immediately with a subagent id, you are NOT blocked on it. A \
+subagent has the same tools and system prompt as you, but starts with a \
+fresh context window: it sees ONLY the `task` and `context` strings you \
+pass it, not your conversation history. When the subagent finishes, its \
+final reply arrives as a user message prefixed \
+`SUBAGENT <id> COMPLETED: ...` (or `FAILED: ...`).
+
+Use subagents when:
+- A subtask is self-contained and you don't need to see its intermediate \
+  tool output.
+- Exploring an unfamiliar area would take many searches whose results \
+  would bloat your context.
+- Multiple independent investigations can proceed in parallel.
+
+Do NOT use subagents for trivial tasks — the spawn overhead isn't worth \
+it for a single tool call or a one-line question.
+
+You may continue working (calling other tools, replying to the user) \
+while subagents run. When you have nothing else to do, the runtime will \
+pause the loop until at least one subagent result arrives, then let you \
+respond. Because the subagent has no access to your context, put \
+everything it needs (file paths, prior findings, relevant snippets, \
+success criteria) into the `context` argument.";
+
+// ---------------------------------------------------------------------------
+// Subagents
+// ---------------------------------------------------------------------------
+
+/// Maximum nesting depth for subagents. A top-level agent is depth 0; its
+/// direct subagents are depth 1; and so on. Beyond this limit, further
+/// `start_subagent` calls are rejected.
+pub const MAX_SUBAGENT_DEPTH: usize = 4;
+
+/// Maximum number of concurrently-running subagents a single parent agent
+/// may have in flight. Additional `start_subagent` calls are rejected until
+/// one finishes.
+pub const MAX_CONCURRENT_SUBAGENTS_PER_PARENT: usize = 8;
 
 /// Returned as a tool result when the actual result would push the
 /// conversation past the model's context window.

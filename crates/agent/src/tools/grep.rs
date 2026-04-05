@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
@@ -6,7 +7,7 @@ use std::path::Path;
 
 use crate::llm::{ChatCompletionTool, FunctionDefinition};
 
-use super::{Tool, ToolError};
+use super::{run_blocking, Tool, ToolError};
 
 pub struct GrepTool;
 
@@ -25,6 +26,7 @@ fn default_limit() -> usize {
     250
 }
 
+#[async_trait]
 impl Tool for GrepTool {
     fn name(&self) -> &str {
         "grep"
@@ -65,51 +67,53 @@ impl Tool for GrepTool {
         }
     }
 
-    fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
+    async fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
         let args: Args =
             serde_json::from_str(arguments).map_err(|e| ToolError(format!("bad args: {e}")))?;
 
-        let re = Regex::new(&args.pattern)
-            .map_err(|e| ToolError(format!("invalid regex: {e}")))?;
+        run_blocking(move || {
+            let re = Regex::new(&args.pattern)
+                .map_err(|e| ToolError(format!("invalid regex: {e}")))?;
 
-        let search_path = args.path.as_deref().unwrap_or(".");
-        let path = Path::new(search_path);
+            let search_path = args.path.as_deref().unwrap_or(".");
+            let path = Path::new(search_path);
 
-        let mut matches: Vec<JsonValue> = Vec::new();
+            let mut matches: Vec<JsonValue> = Vec::new();
 
-        if path.is_file() {
-            search_file(&re, path, args.limit, &mut matches);
-        } else if path.is_dir() {
-            // If a glob filter is provided, use it to find files; otherwise walk all files.
-            let file_pattern = match &args.glob {
-                Some(g) => format!("{}/{}",
-                    search_path.trim_end_matches('/'),
-                    g
-                ),
-                None => format!("{}/**/*", search_path.trim_end_matches('/')),
-            };
+            if path.is_file() {
+                search_file(&re, path, args.limit, &mut matches);
+            } else if path.is_dir() {
+                let file_pattern = match &args.glob {
+                    Some(g) => format!("{}/{}",
+                        search_path.trim_end_matches('/'),
+                        g
+                    ),
+                    None => format!("{}/**/*", search_path.trim_end_matches('/')),
+                };
 
-            let entries: Vec<_> = glob::glob(&file_pattern)
-                .map_err(|e| ToolError(format!("invalid glob: {e}")))?
-                .filter_map(|e| e.ok())
-                .filter(|p| p.is_file())
-                .collect();
+                let entries: Vec<_> = glob::glob(&file_pattern)
+                    .map_err(|e| ToolError(format!("invalid glob: {e}")))?
+                    .filter_map(|e| e.ok())
+                    .filter(|p| p.is_file())
+                    .collect();
 
-            for file_path in entries {
-                if matches.len() >= args.limit {
-                    break;
+                for file_path in entries {
+                    if matches.len() >= args.limit {
+                        break;
+                    }
+                    search_file(&re, &file_path, args.limit - matches.len(), &mut matches);
                 }
-                search_file(&re, &file_path, args.limit - matches.len(), &mut matches);
+            } else {
+                return Err(ToolError(format!("path not found: {search_path}")));
             }
-        } else {
-            return Err(ToolError(format!("path not found: {search_path}")));
-        }
 
-        let total = matches.len();
-        Ok(json!({
-            "matches": matches,
-            "count": total
-        }))
+            let total = matches.len();
+            Ok(json!({
+                "matches": matches,
+                "count": total
+            }))
+        })
+        .await
     }
 }
 

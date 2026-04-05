@@ -171,16 +171,49 @@ pub async fn send(
         settings.reasoning_summary.as_deref(),
     );
 
+    // Per-conversation scratch directory lives alongside the conversation's
+    // own data. The agent is told about it in the system prompt so it
+    // writes scratch files here instead of `/tmp`.
+    let scratch_dir = scratch_dir_for(&conv.id);
+    let scratch_dir = match std::fs::create_dir_all(&scratch_dir) {
+        Ok(()) => Some(scratch_dir),
+        Err(e) => {
+            eprintln!("warning: failed to create scratch dir: {e}");
+            None
+        }
+    };
+
+    // Equip this top-level run with subagent support. Each subagent's
+    // conversation is persisted under
+    // `~/.agent-harness/conversations/<conv_id>/subagent/<sub_id>.{json,jsonl}`
+    // so it's joinable from the subagent id recorded in the parent's
+    // `start_subagent` tool result.
+    let subagent_root = subagent_root_for(&conv.id);
+    let ctx = agent::subagents::SubagentContext {
+        chat_client: state.chat_client.clone(),
+        base_tools: Arc::clone(&state.tools),
+        parent_event_sink: events.clone(),
+        depth: 0,
+        model: conv.model.clone(),
+        reasoning: reasoning.clone(),
+        subagent_root,
+        scratch_dir: scratch_dir.clone(),
+    };
+    let (mut inbox, tools) = agent::subagents::equip(ctx);
+
     // Run the agent loop — this calls the LLM, executes tools, and loops.
-    // Events stream out to the frontend while the loop runs.
+    // Events stream out to the frontend while the loop runs. The loop stays
+    // alive until every in-flight subagent has reported back.
     let result = agent::agent::run(
         &state.chat_client,
         &store,
         &mut conv,
-        Arc::clone(&state.tools),
+        tools,
         &params.message,
         reasoning,
         events.as_ref(),
+        Some(&mut inbox),
+        scratch_dir.as_deref(),
     )
     .await
     .map_err(|e| format!("agent error: {e}"))?;
@@ -218,6 +251,22 @@ pub async fn send(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn subagent_root_for(conv_id: &str) -> std::path::PathBuf {
+    conv_dir_for(conv_id).join("subagent")
+}
+
+fn scratch_dir_for(conv_id: &str) -> std::path::PathBuf {
+    conv_dir_for(conv_id).join("tmp")
+}
+
+fn conv_dir_for(conv_id: &str) -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home)
+        .join(".agent-harness")
+        .join("conversations")
+        .join(conv_id)
+}
 
 fn uuid() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
