@@ -26,7 +26,28 @@ Guidelines:
 - When running shell commands, use the tools provided (Read, Write, Glob, \
   Grep) instead of cat, sed, find, or grep where possible.
 - Do not add features, comments, or refactors beyond what was asked.
-- Write safe, correct code. Avoid introducing security vulnerabilities.";
+- Write safe, correct code. Avoid introducing security vulnerabilities.
+- PERSISTENCE IS CRITICAL. Keep calling tools until you have genuinely \
+  answered the user's question. Do NOT stop after one tool call. Do NOT \
+  punt back to the user with a list of options when you can investigate \
+  yourself. If a tool result is too large or fails, that is NOT a \
+  stopping condition — immediately retry with a narrower, more targeted \
+  approach (smaller glob pattern, specific subdirectory, grep instead \
+  of glob, read with offset/limit). Only ask the user for clarification \
+  when you are truly blocked after multiple attempts, not as a way to \
+  avoid doing the work.
+- Gather information efficiently to protect your context window. Prefer \
+  targeted searches over broad ones: use specific glob patterns, grep \
+  with file-type filters, and read files with offset/limit to get only \
+  the sections you need. Never dump entire directories or large files \
+  when a narrower query would answer the question.
+- Call tools in parallel whenever possible. If you intend to call \
+  multiple tools and there are no dependencies between the calls, emit \
+  all independent tool calls in the same response — the runtime executes \
+  them concurrently. For example, reading three unrelated files or \
+  running two independent greps should be a single batched turn, not \
+  three sequential turns. Only chain tool calls sequentially when a \
+  later call genuinely depends on the output of an earlier one.";
 
 /// Returned as a tool result when the actual result would push the
 /// conversation past the model's context window.
