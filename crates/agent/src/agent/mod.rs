@@ -54,14 +54,65 @@ pub struct RunResult {
     pub tool_calls: Vec<ToolCallInfo>,
 }
 
+// ---------------------------------------------------------------------------
+// Streaming events
+//
+// Emitted in real time during `run_with_events` so callers can render
+// progress (thinking spinner, tool call previews) before the final response
+// is ready.
+// ---------------------------------------------------------------------------
+
+/// An event emitted during the agent loop. Wire shape is a serde-tagged enum
+/// so the server can forward these as JSON-RPC notifications directly.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentEvent {
+    /// LLM request is in-flight.
+    LlmStart,
+    /// LLM request returned.
+    LlmEnd,
+    /// A tool is about to execute.
+    ToolCallStart { name: String, arguments: String },
+    /// A tool finished executing.
+    ToolCallEnd { name: String, result: String },
+}
+
+/// A channel for streaming [`AgentEvent`]s out of the agent loop.
+pub type EventSink = tokio::sync::mpsc::UnboundedSender<AgentEvent>;
+
+fn emit(sink: Option<&EventSink>, event: AgentEvent) {
+    if let Some(s) = sink {
+        // Receiver-closed is non-fatal — the frontend may have disconnected
+        // mid-run, but the agent loop should still complete.
+        let _ = s.send(event);
+    }
+}
+
 /// Append a user message, then loop: call the LLM, execute any tool calls,
 /// feed results back, and repeat until the model produces a final text answer.
+///
+/// Thin wrapper over [`run_with_events`] with no event streaming — keeps the
+/// existing callsites (tests, etc.) unchanged.
 pub async fn run<S: ConversationStore>(
     client: &ChatClient,
     store: &S,
     conv: &mut Conversation,
     tools: &ToolRegistry,
     input: &str,
+) -> Result<RunResult, RunError<S::Error>> {
+    run_with_events(client, store, conv, tools, input, None).await
+}
+
+/// Same as [`run`], but streams [`AgentEvent`]s to the given sink as the
+/// loop progresses. Callers use this to drive a "thinking" indicator and
+/// render tool calls before the final response lands.
+pub async fn run_with_events<S: ConversationStore>(
+    client: &ChatClient,
+    store: &S,
+    conv: &mut Conversation,
+    tools: &ToolRegistry,
+    input: &str,
+    events: Option<&EventSink>,
 ) -> Result<RunResult, RunError<S::Error>> {
     // 1. Push user message & persist.
     conv.push_user(input);
@@ -92,7 +143,9 @@ pub async fn run<S: ConversationStore>(
         };
 
         // 3. Call LLM.
+        emit(events, AgentEvent::LlmStart);
         let response = client.create_chat_completion(&request).await?;
+        emit(events, AgentEvent::LlmEnd);
 
         let choice = response.choices.first();
         let resp_msg = choice.map(|c| &c.message);
@@ -131,6 +184,14 @@ pub async fn run<S: ConversationStore>(
         let tool_defs_for_budget = tools.definitions();
 
         for call in calls {
+            emit(
+                events,
+                AgentEvent::ToolCallStart {
+                    name: call.function.name.clone(),
+                    arguments: call.function.arguments.clone(),
+                },
+            );
+
             let raw_result = match tools.call(&call.function.name, &call.function.arguments) {
                 Ok(val) => val.to_string(),
                 Err(e) => format!("{{\"error\": \"{e}\"}}"),
@@ -140,6 +201,14 @@ pub async fn run<S: ConversationStore>(
                 &conv.messages,
                 &tool_defs_for_budget,
                 &raw_result,
+            );
+
+            emit(
+                events,
+                AgentEvent::ToolCallEnd {
+                    name: call.function.name.clone(),
+                    result: result.clone(),
+                },
             );
 
             executed_tool_calls.push(ToolCallInfo {

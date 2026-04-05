@@ -7,20 +7,23 @@
 //   - stderr is reserved for debug logging (never parsed by frontend)
 //
 // The server is async (tokio) because the agent loop makes HTTP calls to
-// OpenRouter. State (ChatClient, ToolRegistry) is initialized once at
-// startup and shared across all requests.
+// OpenRouter and streams AgentEvents back to the frontend as JSON-RPC
+// notifications while a `conversation.send` is in-flight. State (ChatClient,
+// ToolRegistry) is initialized once at startup and shared across requests.
 // ---------------------------------------------------------------------------
 
 mod handlers;
 mod rpc;
 
-use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
 use agent::llm::ChatClient;
 use agent::tools::{AdditionTool, BashTool, GlobTool, GrepTool, ReadTool, ToolRegistry, WriteTool};
 use rpc::methods::RpcMethod;
-use rpc::{Request, Response, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
+use rpc::{Notification, Request, Response, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
+use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Shared server state — initialized once, passed to async handlers
@@ -30,6 +33,10 @@ pub struct ServerState {
     pub chat_client: ChatClient,
     pub tools: ToolRegistry,
 }
+
+/// Serialized writer for stdout — notifications and responses share this so
+/// we never interleave two JSON messages on a single line.
+type SharedStdout = Arc<Mutex<tokio::io::Stdout>>;
 
 #[tokio::main]
 async fn main() {
@@ -56,21 +63,17 @@ async fn main() {
             .register(GrepTool),
     });
 
-    let stdin = io::stdin().lock();
-    let mut stdout = io::stdout().lock();
+    let stdout: SharedStdout = Arc::new(Mutex::new(tokio::io::stdout()));
+    let stdin = BufReader::new(tokio::io::stdin());
+    let mut lines = stdin.lines();
 
-    for line in stdin.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-
+    while let Ok(Some(line)) = lines.next_line().await {
         if line.trim().is_empty() {
             continue;
         }
 
         let response = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => dispatch(req, &state).await,
+            Ok(req) => dispatch(req, &state, &stdout).await,
             Err(e) => Response::error(
                 rpc::RequestId::Number(0),
                 rpc::PARSE_ERROR,
@@ -78,9 +81,27 @@ async fn main() {
             ),
         };
 
-        let json = serde_json::to_string(&response).expect("response serialization cannot fail");
-        let _ = writeln!(stdout, "{json}");
-        let _ = stdout.flush();
+        write_json(&stdout, &response).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// I/O helpers
+// ---------------------------------------------------------------------------
+
+async fn write_json<T: serde::Serialize>(stdout: &SharedStdout, value: &T) {
+    let json = serde_json::to_string(value).expect("serialization cannot fail");
+    let mut out = stdout.lock().await;
+    let _ = out.write_all(json.as_bytes()).await;
+    let _ = out.write_all(b"\n").await;
+    let _ = out.flush().await;
+}
+
+fn notification(method: impl Into<String>, params: Value) -> Notification {
+    Notification {
+        jsonrpc: "2.0".into(),
+        method: method.into(),
+        params,
     }
 }
 
@@ -88,7 +109,7 @@ async fn main() {
 // Dispatcher
 // ---------------------------------------------------------------------------
 
-async fn dispatch(req: Request, state: &Arc<ServerState>) -> Response {
+async fn dispatch(req: Request, state: &Arc<ServerState>, stdout: &SharedStdout) -> Response {
     use rpc::methods::{conversation, settings};
 
     match req.method.as_str() {
@@ -109,24 +130,7 @@ async fn dispatch(req: Request, state: &Arc<ServerState>) -> Response {
         conversation::Get::NAME => {
             handle::<conversation::Get, _>(req, handlers::conversation::get)
         }
-        conversation::Send::NAME => {
-            let state = Arc::clone(state);
-            let id = req.id.clone();
-            let params: conversation::SendParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(e) => {
-                    return Response::error(id, INVALID_PARAMS, format!("invalid params: {e}"));
-                }
-            };
-            match handlers::conversation::send(params, &state).await {
-                Ok(result) => {
-                    let value = serde_json::to_value(result)
-                        .expect("result serialization cannot fail");
-                    Response::success(id, value)
-                }
-                Err(msg) => Response::error(id, INTERNAL_ERROR, msg),
-            }
-        }
+        conversation::Send::NAME => handle_send(req, state, stdout).await,
 
         // -- Unknown --------------------------------------------------------
         _ => Response::error(
@@ -137,8 +141,55 @@ async fn dispatch(req: Request, state: &Arc<ServerState>) -> Response {
     }
 }
 
+/// Handle `conversation.send` with event streaming. Events emitted by the
+/// agent loop are forwarded to stdout as JSON-RPC notifications while the
+/// request is still in-flight; the final response is written when the loop
+/// returns.
+async fn handle_send(
+    req: Request,
+    state: &Arc<ServerState>,
+    stdout: &SharedStdout,
+) -> Response {
+    use rpc::methods::conversation::SendParams;
+
+    let id = req.id.clone();
+    let params: SendParams = match serde_json::from_value(req.params) {
+        Ok(p) => p,
+        Err(e) => {
+            return Response::error(id, INVALID_PARAMS, format!("invalid params: {e}"));
+        }
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<agent::agent::AgentEvent>();
+
+    // Forwarder: drain events → stdout as notifications. Ends when `tx` is
+    // dropped (i.e., the handler returns), at which point `recv()` yields None.
+    let stdout_for_fwd = Arc::clone(stdout);
+    let forwarder = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let params = serde_json::to_value(&event)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            let notif = notification("agent.event", params);
+            write_json(&stdout_for_fwd, &notif).await;
+        }
+    });
+
+    let result = handlers::conversation::send(params, state, Some(tx)).await;
+
+    // Ensure all queued notifications flush before the final response.
+    let _ = forwarder.await;
+
+    match result {
+        Ok(result) => {
+            let value = serde_json::to_value(result).expect("result serialization cannot fail");
+            Response::success(id, value)
+        }
+        Err(msg) => Response::error(id, INTERNAL_ERROR, msg),
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Generic handler wrapper
+// Generic handler wrapper (sync handlers)
 // ---------------------------------------------------------------------------
 
 fn handle<M: RpcMethod, F>(req: Request, handler: F) -> Response
