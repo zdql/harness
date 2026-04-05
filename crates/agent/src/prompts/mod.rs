@@ -72,6 +72,55 @@ Please try a shorter message or start a new conversation.";
 /// Default model for the main agent loop.
 pub const DEFAULT_MODEL: &str = "anthropic/claude-opus-4-6";
 
+/// Default reasoning effort sent on every agent-loop request. Models that
+/// don't support extended thinking ignore this field; thinking-capable models
+/// (Claude Opus/Sonnet 4+, o-series) allocate a reasoning budget accordingly.
+/// Paired with `"auto"` summary so the model decides how much reasoning text
+/// to surface back to us.
+pub const DEFAULT_REASONING_EFFORT: crate::llm::ReasoningEffort =
+    crate::llm::ReasoningEffort::Medium;
+pub const DEFAULT_REASONING_SUMMARY: crate::llm::ReasoningSummary =
+    crate::llm::ReasoningSummary::Auto;
+
+/// Build a `Reasoning` config from optional string settings (e.g. values
+/// loaded from `Settings`). Unknown strings fall back to the defaults.
+///
+/// Special-case: `effort == "off"` returns `None` so the caller omits the
+/// `reasoning` field entirely — useful when pointing the agent at a model
+/// that errors on unknown fields.
+pub fn resolve_reasoning(
+    effort: Option<&str>,
+    summary: Option<&str>,
+) -> Option<crate::llm::Reasoning> {
+    use crate::llm::{Reasoning, ReasoningEffort, ReasoningSummary};
+
+    if matches!(effort, Some(s) if s.eq_ignore_ascii_case("off")) {
+        return None;
+    }
+
+    let effort_val = match effort.map(str::to_ascii_lowercase).as_deref() {
+        Some("none") => ReasoningEffort::None,
+        Some("minimal") => ReasoningEffort::Minimal,
+        Some("low") => ReasoningEffort::Low,
+        Some("medium") => ReasoningEffort::Medium,
+        Some("high") => ReasoningEffort::High,
+        Some("xhigh") => ReasoningEffort::Xhigh,
+        _ => DEFAULT_REASONING_EFFORT,
+    };
+
+    let summary_val = match summary.map(str::to_ascii_lowercase).as_deref() {
+        Some("auto") => ReasoningSummary::Auto,
+        Some("concise") => ReasoningSummary::Concise,
+        Some("detailed") => ReasoningSummary::Detailed,
+        _ => DEFAULT_REASONING_SUMMARY,
+    };
+
+    Some(Reasoning {
+        effort: Some(effort_val),
+        summary: Some(summary_val),
+    })
+}
+
 /// Model used for lightweight background tasks (compaction, summarization).
 pub const BACKGROUND_MODEL: &str = "anthropic/claude-haiku-4-5";
 
