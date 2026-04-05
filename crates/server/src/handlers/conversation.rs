@@ -144,7 +144,11 @@ pub fn get(params: GetParams) -> Result<GetResult, String> {
 /// This is the core integration point: it loads the conversation from disk,
 /// runs the agent loop (LLM calls + tool execution), persists the result,
 /// and returns the assistant's final text reply.
-pub async fn send(params: SendParams, state: &Arc<ServerState>) -> Result<SendResult, String> {
+pub async fn send(
+    params: SendParams,
+    state: &Arc<ServerState>,
+    events: Option<agent::agent::EventSink>,
+) -> Result<SendResult, String> {
     let store = store()?;
 
     // Load the conversation (or error if it doesn't exist)
@@ -159,13 +163,15 @@ pub async fn send(params: SendParams, state: &Arc<ServerState>) -> Result<SendRe
         });
     }
 
-    // Run the agent loop — this calls the LLM, executes tools, and loops
-    let result = agent::agent::run(
+    // Run the agent loop — this calls the LLM, executes tools, and loops.
+    // Events stream out to the frontend while the loop runs.
+    let result = agent::agent::run_with_events(
         &state.chat_client,
         &store,
         &mut conv,
         &state.tools,
         &params.message,
+        events.as_ref(),
     )
     .await
     .map_err(|e| format!("agent error: {e}"))?;

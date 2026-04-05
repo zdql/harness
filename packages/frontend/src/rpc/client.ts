@@ -8,7 +8,12 @@
 
 import { spawn, type Subprocess, type FileSink } from "bun";
 import { resolve } from "path";
-import type { JsonRpcRequest, JsonRpcResponse, RequestId } from "./protocol.ts";
+import type {
+  JsonRpcNotification,
+  JsonRpcRequest,
+  JsonRpcResponse,
+  RequestId,
+} from "./protocol.ts";
 import type { MethodName, MethodRegistry } from "./methods/index.ts";
 import { ok, err, type Result, type RpcError } from "./result.ts";
 
@@ -27,6 +32,9 @@ export class RpcClient {
   >();
   private buffer = "";
   private encoder = new TextEncoder();
+  private notificationHandler:
+    | ((method: string, params: unknown) => void)
+    | null = null;
 
   constructor(opts: RpcClientOptions = {}) {
     const bin =
@@ -93,6 +101,17 @@ export class RpcClient {
     return promise;
   }
 
+  /**
+   * Register a handler for server→client notifications (messages with no
+   * `id`, e.g. `agent.event`). Pass `null` to clear. Only one handler at a
+   * time — overwriting replaces the previous one.
+   */
+  onNotification(
+    handler: ((method: string, params: unknown) => void) | null,
+  ): void {
+    this.notificationHandler = handler;
+  }
+
   /** Gracefully shut down the server process. */
   close(): void {
     try {
@@ -128,16 +147,29 @@ export class RpcClient {
           if (line.length === 0) continue;
 
           try {
-            const msg = JSON.parse(line) as JsonRpcResponse;
-            const settle = this.pending.get(msg.id);
+            const msg = JSON.parse(line) as
+              | JsonRpcResponse
+              | JsonRpcNotification;
+
+            // Notifications have no `id` — dispatch to the handler.
+            if (!("id" in msg) || msg.id === undefined) {
+              const notif = msg as JsonRpcNotification;
+              this.notificationHandler?.(notif.method, notif.params);
+              continue;
+            }
+
+            const response = msg as JsonRpcResponse;
+            const settle = this.pending.get(response.id);
             if (!settle) continue;
 
-            this.pending.delete(msg.id);
+            this.pending.delete(response.id);
 
-            if (msg.error) {
-              settle(err({ code: msg.error.code, message: msg.error.message }));
+            if (response.error) {
+              settle(
+                err({ code: response.error.code, message: response.error.message }),
+              );
             } else {
-              settle(ok(msg.result));
+              settle(ok(response.result));
             }
           } catch {
             // Skip malformed lines
