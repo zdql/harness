@@ -18,10 +18,12 @@ import { defaultKeyMatchers } from "../keybindings/keyMatchers.ts";
 import { Command } from "../keybindings/keyBindings.ts";
 import { useKeypress, type Key } from "../keypress/useKeypress.ts";
 import { DefaultAppLayout } from "./DefaultAppLayout.tsx";
+import type { RpcClient } from "../rpc/client.ts";
 
 interface AppProps {
   onSubmit: (text: string) => void;
   placeholder?: string;
+  rpc: RpcClient;
 }
 
 /** Global key handler: quit on ctrl+c when composer is empty, suspend on ctrl+z. */
@@ -42,7 +44,7 @@ function GlobalKeyHandler({ onExit }: { onExit: () => void }): null {
   return null;
 }
 
-export function App({ onSubmit, placeholder }: AppProps): React.JSX.Element {
+export function App({ onSubmit, placeholder, rpc }: AppProps): React.JSX.Element {
   const ink = useApp();
   const [focused] = useState(true);
 
@@ -58,6 +60,7 @@ export function App({ onSubmit, placeholder }: AppProps): React.JSX.Element {
           composerFocused={focused}
           onSubmit={onSubmit}
           placeholder={placeholder}
+          rpc={rpc}
         />
       </KeyMatchersProvider>
     </KeypressProvider>

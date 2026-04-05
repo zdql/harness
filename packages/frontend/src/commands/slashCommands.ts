@@ -11,6 +11,7 @@
 
 import type { RpcClient } from "../rpc/client.ts";
 import { historyStore } from "../state/historyStore.ts";
+import { overlayStore } from "../state/overlayStore.ts";
 
 export interface SlashContext {
   rpc: RpcClient;
@@ -47,6 +48,13 @@ export const slashCommands: SlashCommand[] = [
         type: "info",
         text: `Cleared. New conversation id=${res.value.id}.`,
       });
+    },
+  },
+  {
+    name: "settings",
+    description: "Open the settings editor (model, reasoning effort, …)",
+    run: () => {
+      overlayStore.set("settings");
     },
   },
   {

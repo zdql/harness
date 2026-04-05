@@ -12,18 +12,34 @@
 import { Box } from "ink";
 import { MainContent } from "./MainContent.tsx";
 import { Composer } from "./Composer.tsx";
+import { SettingsView } from "./SettingsView.tsx";
+import { useOverlay } from "../state/overlayStore.ts";
+import type { RpcClient } from "../rpc/client.ts";
 
 interface Props {
   composerFocused: boolean;
   onSubmit: (text: string) => void;
   placeholder?: string;
+  rpc: RpcClient;
 }
 
 export function DefaultAppLayout({
   composerFocused,
   onSubmit,
   placeholder,
+  rpc,
 }: Props): React.JSX.Element {
+  const overlay = useOverlay();
+
+  if (overlay === "settings") {
+    return (
+      <Box flexDirection="column">
+        <MainContent />
+        <SettingsView rpc={rpc} />
+      </Box>
+    );
+  }
+
   return (
     <Box flexDirection="column">
       <MainContent />
