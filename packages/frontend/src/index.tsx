@@ -11,6 +11,7 @@ import { terminalCapabilityManager } from "./terminal/terminalCapabilityManager.
 import { historyStore } from "./state/historyStore.ts";
 import { RpcClient } from "./rpc/client.ts";
 import { App } from "./ui/App.tsx";
+import { dispatchSlashCommand } from "./commands/slashCommands.ts";
 
 async function main(): Promise<void> {
   // 1. Probe terminal capabilities (Kitty / modifyOtherKeys / bg color).
@@ -27,15 +28,25 @@ async function main(): Promise<void> {
     rpc.close();
     process.exit(1);
   }
-  const conversationId = createRes.value.id;
+  let conversationId = createRes.value.id;
 
   historyStore.addItem({
     type: "info",
     text: `Connected. Conversation id=${conversationId}. Type a message and hit Enter.`,
   });
 
+  const slashCtx = {
+    rpc,
+    getConversationId: () => conversationId,
+    setConversationId: (id: string) => {
+      conversationId = id;
+    },
+  };
+
   // 3. Composer submit handler: push user turn, call RPC, push reply.
   async function onSubmit(text: string): Promise<void> {
+    if (await dispatchSlashCommand(text, slashCtx)) return;
+
     historyStore.addItem({ type: "user", text });
 
     const res = await rpc.call("conversation.send", {
