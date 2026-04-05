@@ -52,7 +52,7 @@ Please try a shorter message or start a new conversation.";
 pub const DEFAULT_MODEL: &str = "anthropic/claude-opus-4-6";
 
 /// Model used for lightweight background tasks (compaction, summarization).
-pub const BACKGROUND_MODEL: &str = "anthropic/claude-haiku-4-5-20251001";
+pub const BACKGROUND_MODEL: &str = "anthropic/claude-haiku-4-5";
 
 /// Model used for compaction summaries.
 pub const COMPACTION_MODEL: &str = BACKGROUND_MODEL;
