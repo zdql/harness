@@ -4,6 +4,7 @@ mod glob_tool;
 mod grep;
 pub mod handler;
 mod read;
+mod start_subagent;
 mod write;
 
 pub use addition::AdditionTool;
@@ -11,16 +12,27 @@ pub use bash::BashTool;
 pub use glob_tool::GlobTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
+pub use start_subagent::StartSubagentTool;
 pub use write::WriteTool;
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 
 use crate::llm::ChatCompletionTool;
 
 // ---------------------------------------------------------------------------
 // Tool trait — implement this for each tool the agent can call
+//
+// Tools are async so they can spawn tokio tasks (e.g. `start_subagent`),
+// perform async I/O, or propagate cancellation cleanly. Tools whose bodies
+// are CPU- or blocking-I/O-bound MUST wrap their sync work in
+// `tokio::task::spawn_blocking` (via the `run_blocking` helper) so they
+// don't starve the async worker pool.
 // ---------------------------------------------------------------------------
 
+#[async_trait]
 pub trait Tool: Send + Sync {
     /// Unique name matching the function name sent to the LLM.
     fn name(&self) -> &str;
@@ -29,7 +41,7 @@ pub trait Tool: Send + Sync {
     fn definition(&self) -> ChatCompletionTool;
 
     /// Execute the tool with the raw JSON arguments string from the model.
-    fn call(&self, arguments: &str) -> Result<JsonValue, ToolError>;
+    async fn call(&self, arguments: &str) -> Result<JsonValue, ToolError>;
 }
 
 #[derive(Debug)]
@@ -43,12 +55,26 @@ impl std::fmt::Display for ToolError {
 
 impl std::error::Error for ToolError {}
 
+/// Run a synchronous, blocking closure on tokio's blocking pool and await its
+/// result. Use this in tool implementations whose work is CPU-bound or uses
+/// blocking-I/O APIs (std::fs, std::process, regex over large files, …).
+pub async fn run_blocking<F, T>(f: F) -> Result<T, ToolError>
+where
+    F: FnOnce() -> Result<T, ToolError> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(res) => res,
+        Err(e) => Err(ToolError(format!("tool task join failed: {e}"))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Registry — thin collection of tools for the agent loop
 // ---------------------------------------------------------------------------
 
 pub struct ToolRegistry {
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
@@ -57,8 +83,22 @@ impl ToolRegistry {
     }
 
     pub fn register(mut self, tool: impl Tool + 'static) -> Self {
-        self.tools.push(Box::new(tool));
+        self.tools.push(Arc::new(tool));
         self
+    }
+
+    pub fn register_arc(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.tools.push(tool);
+        self
+    }
+
+    /// Return a new registry containing this registry's tools plus `tool`.
+    /// Used to attach per-run state (e.g. `start_subagent`) on top of the
+    /// stateless base registry held in `ServerState`.
+    pub fn with_tool(&self, tool: Arc<dyn Tool>) -> ToolRegistry {
+        let mut tools = self.tools.clone();
+        tools.push(tool);
+        ToolRegistry { tools }
     }
 
     /// Tool definitions to include in the chat completion request.
@@ -67,13 +107,13 @@ impl ToolRegistry {
     }
 
     /// Look up a tool by name and call it.
-    pub fn call(&self, name: &str, arguments: &str) -> Result<JsonValue, ToolError> {
+    pub async fn call(&self, name: &str, arguments: &str) -> Result<JsonValue, ToolError> {
         let tool = self
             .tools
             .iter()
             .find(|t| t.name() == name)
             .ok_or_else(|| ToolError(format!("unknown tool: {name}")))?;
-        tool.call(arguments)
+        tool.call(arguments).await
     }
 }
 

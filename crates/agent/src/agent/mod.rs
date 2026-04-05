@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -7,9 +8,9 @@ use crate::conversation::{self, compaction, Conversation};
 use crate::llm::{
     AssistantContent, AssistantMessage, ChatClient, ChatCompletionMessage, ChatError,
     CreateChatCompletionRequest, Reasoning, StreamAccumulator, StringOrTextParts, SystemMessage,
-    ToolMessage,
 };
 use crate::prompts;
+use crate::subagents::{SubagentInbox, SubagentResult};
 use crate::tools::{handler, ToolRegistry};
 use storage::ConversationStore;
 
@@ -62,9 +63,9 @@ pub struct RunResult {
 // ---------------------------------------------------------------------------
 // Streaming events
 //
-// Emitted in real time during `run_with_events` so callers can render
-// progress (thinking spinner, tool call previews) before the final response
-// is ready.
+// Emitted in real time during the agent loop so callers can render progress
+// (thinking spinner, tool call previews, subagent activity) before the final
+// response is ready.
 // ---------------------------------------------------------------------------
 
 /// An event emitted during the agent loop. Wire shape is a serde-tagged enum
@@ -86,6 +87,20 @@ pub enum AgentEvent {
     ToolCallStart { name: String, arguments: String },
     /// A tool finished executing.
     ToolCallEnd { name: String, result: String },
+    /// A subagent has been spawned from this agent's `start_subagent` tool.
+    SubagentStarted { subagent_id: String, task: String },
+    /// A subagent spawned from this agent has finished.
+    SubagentCompleted {
+        subagent_id: String,
+        status: String,
+        output: String,
+    },
+    /// An event emitted by a subagent (or one of its own subagents). Nested
+    /// `SubagentEvent`s form a tree mirroring the spawn hierarchy.
+    SubagentEvent {
+        subagent_id: String,
+        inner: Box<AgentEvent>,
+    },
 }
 
 /// A channel for streaming [`AgentEvent`]s out of the agent loop.
@@ -102,9 +117,12 @@ fn emit(sink: Option<&EventSink>, event: AgentEvent) {
 /// Append a user message, then loop: call the LLM, execute any tool calls,
 /// feed results back, and repeat until the model produces a final text answer.
 ///
+/// If `subagent_inbox` is `Some`, the loop drains pending subagent results
+/// into the conversation as user messages at each iteration boundary, and —
+/// on exit — waits for any still-in-flight subagents before returning.
+///
 /// If `events` is `Some`, streams [`AgentEvent`]s to the sink as the loop
-/// progresses. Callers use this to drive a "thinking" indicator and render
-/// tool calls before the final response lands.
+/// progresses.
 pub async fn run<S: ConversationStore>(
     client: &ChatClient,
     store: &S,
@@ -113,6 +131,8 @@ pub async fn run<S: ConversationStore>(
     input: &str,
     reasoning: Option<Reasoning>,
     events: Option<&EventSink>,
+    mut subagent_inbox: Option<&mut SubagentInbox>,
+    scratch_dir: Option<&std::path::Path>,
 ) -> Result<RunResult, RunError<S::Error>> {
     // 1. Push user message & persist.
     conv.push_user(input);
@@ -121,12 +141,21 @@ pub async fn run<S: ConversationStore>(
     let mut executed_tool_calls: Vec<ToolCallInfo> = Vec::new();
 
     loop {
+        // Drain any completed subagents into the conversation before every
+        // LLM call so the model sees their results on its next turn.
+        if let Some(ref mut inbox) = subagent_inbox {
+            for result in inbox.try_drain() {
+                inject_subagent_result(store, conv, &inbox.pending, result)
+                    .map_err(RunError::Storage)?;
+            }
+        }
+
         // 2. Build request with tool definitions.
         //    Prepend the system prompt so the model always sees it first.
         let tool_defs = tools.definitions();
         let mut messages = Vec::with_capacity(1 + conv.messages.len());
         messages.push(ChatCompletionMessage::System(SystemMessage {
-            content: StringOrTextParts::String(prompts::SYSTEM_PROMPT.to_string()),
+            content: StringOrTextParts::String(prompts::build_system_prompt(scratch_dir)),
             name: None,
         }));
         messages.extend(conv.messages.iter().cloned());
@@ -207,10 +236,28 @@ pub async fn run<S: ConversationStore>(
         }));
         conversation::save(store, conv).map_err(RunError::Storage)?;
 
-        // 6. If no tool calls, we're done — return the final text.
+        // 6. If no tool calls, we're either done OR we should wait for
+        //    in-flight subagents before deciding to exit.
         let calls = match tool_calls {
             Some(ref calls) if !calls.is_empty() => calls,
-            _ => return Ok(RunResult { reply: text, tool_calls: executed_tool_calls }),
+            _ => {
+                // Check for pending subagents.
+                if let Some(ref mut inbox) = subagent_inbox {
+                    if inbox.pending() > 0 {
+                        // Block on the next result, then loop back so the
+                        // model can respond to it.
+                        if let Some(result) = inbox.recv().await {
+                            inject_subagent_result(store, conv, &inbox.pending, result)
+                                .map_err(RunError::Storage)?;
+                        }
+                        continue;
+                    }
+                }
+                return Ok(RunResult {
+                    reply: text,
+                    tool_calls: executed_tool_calls,
+                });
+            }
         };
 
         // 7. Execute the batch of tool calls concurrently, then persist
@@ -254,7 +301,7 @@ pub async fn run<S: ConversationStore>(
                 result: result.clone(),
             });
 
-            conv.push_message(ChatCompletionMessage::Tool(ToolMessage {
+            conv.push_message(ChatCompletionMessage::Tool(crate::llm::ToolMessage {
                 content: StringOrTextParts::String(result),
                 tool_call_id: call.id.clone(),
             }));
@@ -272,4 +319,28 @@ pub async fn run<S: ConversationStore>(
 
         // Loop back to step 2 — the model will see the tool results and continue.
     }
+}
+
+// ---------------------------------------------------------------------------
+// Subagent result injection
+// ---------------------------------------------------------------------------
+
+/// Append a finished subagent's result to the conversation as a user message
+/// and decrement the pending counter.
+fn inject_subagent_result<S: ConversationStore>(
+    store: &S,
+    conv: &mut Conversation,
+    pending: &std::sync::atomic::AtomicUsize,
+    result: SubagentResult,
+) -> Result<(), S::Error> {
+    let body = format!(
+        "SUBAGENT {} {}: {}",
+        result.id,
+        result.status.as_str(),
+        result.output,
+    );
+    conv.push_user(&body);
+    conversation::save(store, conv)?;
+    pending.fetch_sub(1, Ordering::AcqRel);
+    Ok(())
 }

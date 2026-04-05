@@ -1,9 +1,10 @@
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
 use crate::llm::{ChatCompletionTool, FunctionDefinition};
 
-use super::{Tool, ToolError};
+use super::{run_blocking, Tool, ToolError};
 
 pub struct GlobTool;
 
@@ -14,6 +15,7 @@ struct Args {
     path: Option<String>,
 }
 
+#[async_trait]
 impl Tool for GlobTool {
     fn name(&self) -> &str {
         "glob"
@@ -46,28 +48,31 @@ impl Tool for GlobTool {
         }
     }
 
-    fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
+    async fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
         let args: Args =
             serde_json::from_str(arguments).map_err(|e| ToolError(format!("bad args: {e}")))?;
 
-        let full_pattern = match &args.path {
-            Some(base) => {
-                let base = base.trim_end_matches('/');
-                format!("{}/{}", base, args.pattern)
-            }
-            None => args.pattern.clone(),
-        };
+        run_blocking(move || {
+            let full_pattern = match &args.path {
+                Some(base) => {
+                    let base = base.trim_end_matches('/');
+                    format!("{}/{}", base, args.pattern)
+                }
+                None => args.pattern.clone(),
+            };
 
-        let paths: Vec<String> = glob::glob(&full_pattern)
-            .map_err(|e| ToolError(format!("invalid glob pattern: {e}")))?
-            .filter_map(|entry| entry.ok())
-            .filter(|p| p.is_file())
-            .map(|p| p.display().to_string())
-            .collect();
+            let paths: Vec<String> = glob::glob(&full_pattern)
+                .map_err(|e| ToolError(format!("invalid glob pattern: {e}")))?
+                .filter_map(|entry| entry.ok())
+                .filter(|p| p.is_file())
+                .map(|p| p.display().to_string())
+                .collect();
 
-        Ok(json!({
-            "files": paths,
-            "count": paths.len()
-        }))
+            Ok(json!({
+                "files": paths,
+                "count": paths.len()
+            }))
+        })
+        .await
     }
 }

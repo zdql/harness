@@ -1,10 +1,11 @@
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use std::fs;
 
 use crate::llm::{ChatCompletionTool, FunctionDefinition};
 
-use super::{Tool, ToolError};
+use super::{run_blocking, Tool, ToolError};
 
 pub struct ReadTool;
 
@@ -17,6 +18,7 @@ struct Args {
     limit: Option<usize>,
 }
 
+#[async_trait]
 impl Tool for ReadTool {
     fn name(&self) -> &str {
         "read"
@@ -53,30 +55,33 @@ impl Tool for ReadTool {
         }
     }
 
-    fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
+    async fn call(&self, arguments: &str) -> Result<JsonValue, ToolError> {
         let args: Args =
             serde_json::from_str(arguments).map_err(|e| ToolError(format!("bad args: {e}")))?;
 
-        let content = fs::read_to_string(&args.file_path)
-            .map_err(|e| ToolError(format!("failed to read {}: {e}", args.file_path)))?;
+        run_blocking(move || {
+            let content = fs::read_to_string(&args.file_path)
+                .map_err(|e| ToolError(format!("failed to read {}: {e}", args.file_path)))?;
 
-        let lines: Vec<&str> = content.lines().collect();
-        let total_lines = lines.len();
+            let lines: Vec<&str> = content.lines().collect();
+            let total_lines = lines.len();
 
-        let offset = args.offset.unwrap_or(1).max(1) - 1; // convert to 0-based
-        let limit = args.limit.unwrap_or(2000);
+            let offset = args.offset.unwrap_or(1).max(1) - 1; // convert to 0-based
+            let limit = args.limit.unwrap_or(2000);
 
-        let selected: Vec<String> = lines
-            .iter()
-            .enumerate()
-            .skip(offset)
-            .take(limit)
-            .map(|(i, line)| format!("{:>6}\t{}", i + 1, line))
-            .collect();
+            let selected: Vec<String> = lines
+                .iter()
+                .enumerate()
+                .skip(offset)
+                .take(limit)
+                .map(|(i, line)| format!("{:>6}\t{}", i + 1, line))
+                .collect();
 
-        Ok(json!({
-            "content": selected.join("\n"),
-            "total_lines": total_lines
-        }))
+            Ok(json!({
+                "content": selected.join("\n"),
+                "total_lines": total_lines
+            }))
+        })
+        .await
     }
 }
