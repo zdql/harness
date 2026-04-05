@@ -2,6 +2,7 @@ mod addition;
 mod bash;
 mod glob_tool;
 mod grep;
+pub mod handler;
 mod read;
 mod write;
 

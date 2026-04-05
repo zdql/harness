@@ -169,7 +169,7 @@ pub async fn send(
         &state.chat_client,
         &store,
         &mut conv,
-        &state.tools,
+        Arc::clone(&state.tools),
         &params.message,
         events.as_ref(),
     )
