@@ -1,8 +1,10 @@
+use futures_util::StreamExt;
+
 use crate::context::ContextBudget;
 use crate::conversation::{self, compaction, Conversation};
 use crate::llm::{
     AssistantContent, AssistantMessage, ChatClient, ChatCompletionMessage, ChatError,
-    CreateChatCompletionRequest, StringOrTextParts, SystemMessage, ToolMessage,
+    CreateChatCompletionRequest, StreamAccumulator, StringOrTextParts, SystemMessage, ToolMessage,
 };
 use crate::prompts;
 use crate::tools::ToolRegistry;
@@ -71,6 +73,12 @@ pub enum AgentEvent {
     LlmStart,
     /// LLM request returned.
     LlmEnd,
+    /// Incremental reasoning / thinking text from a thinking model.
+    /// Frontends can render this live as the model "thinks".
+    ReasoningDelta { text: String },
+    /// Incremental assistant-visible content text. Sent as the final reply
+    /// streams in so the UI can render it progressively.
+    ContentDelta { text: String },
     /// A tool is about to execute.
     ToolCallStart { name: String, arguments: String },
     /// A tool finished executing.
@@ -142,23 +150,55 @@ pub async fn run_with_events<S: ConversationStore>(
             ..Default::default()
         };
 
-        // 3. Call LLM.
+        // 3. Call LLM (streaming). Fold chunks into a StreamAccumulator and
+        //    emit ReasoningDelta / ContentDelta events as text arrives so the
+        //    frontend can render "thinking" and the final reply live.
         emit(events, AgentEvent::LlmStart);
-        let response = client.create_chat_completion(&request).await?;
+        let mut stream = client.create_chat_completion_stream(&request).await?;
+        let mut acc = StreamAccumulator::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            let appended = acc.push_chunk(&chunk);
+            if !appended.reasoning.is_empty() {
+                emit(
+                    events,
+                    AgentEvent::ReasoningDelta {
+                        text: appended.reasoning,
+                    },
+                );
+            }
+            if !appended.content.is_empty() {
+                emit(
+                    events,
+                    AgentEvent::ContentDelta {
+                        text: appended.content,
+                    },
+                );
+            }
+            if let Some(msg) = appended.error {
+                return Err(RunError::Chat(ChatError::Stream(msg)));
+            }
+        }
         emit(events, AgentEvent::LlmEnd);
 
-        let choice = response.choices.first();
-        let resp_msg = choice.map(|c| &c.message);
+        let assembled = acc.into_message();
 
-        // 4. Extract text and tool calls from the response.
-        let text = resp_msg
-            .and_then(|m| m.content.as_deref())
-            .unwrap_or("")
-            .to_string();
+        // 4. Extract text and tool calls from the assembled response.
+        let text = assembled.content;
+        let reasoning_details = if assembled.reasoning_details.is_empty() {
+            None
+        } else {
+            Some(assembled.reasoning_details)
+        };
+        let tool_calls = if assembled.tool_calls.is_empty() {
+            None
+        } else {
+            Some(assembled.tool_calls)
+        };
 
-        let tool_calls = resp_msg.and_then(|m| m.tool_calls.clone());
-
-        // 5. Push assistant message into conversation.
+        // 5. Push assistant message into conversation. `reasoning_details`
+        //    must round-trip back to the model on the next turn — Anthropic
+        //    thinking + tool use rejects requests that drop them.
         conv.push_message(ChatCompletionMessage::Assistant(AssistantMessage {
             content: if text.is_empty() {
                 None
@@ -166,11 +206,11 @@ pub async fn run_with_events<S: ConversationStore>(
                 Some(AssistantContent::String(text.clone()))
             },
             name: None,
-            refusal: resp_msg.and_then(|m| m.refusal.clone()),
+            refusal: assembled.refusal,
             tool_calls: tool_calls.clone(),
             function_call: None,
             audio: None,
-            reasoning_details: None,
+            reasoning_details,
         }));
         conversation::save(store, conv).map_err(RunError::Storage)?;
 
