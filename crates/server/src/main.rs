@@ -31,7 +31,7 @@ use tokio::sync::Mutex;
 
 pub struct ServerState {
     pub chat_client: ChatClient,
-    pub tools: ToolRegistry,
+    pub tools: Arc<ToolRegistry>,
 }
 
 /// Serialized writer for stdout — notifications and responses share this so
@@ -54,13 +54,15 @@ async fn main() {
 
     let state = Arc::new(ServerState {
         chat_client: ChatClient::new(&api_key).with_title("harness"),
-        tools: ToolRegistry::new()
-            .register(AdditionTool)
-            .register(BashTool)
-            .register(ReadTool)
-            .register(WriteTool)
-            .register(GlobTool)
-            .register(GrepTool),
+        tools: Arc::new(
+            ToolRegistry::new()
+                .register(AdditionTool)
+                .register(BashTool)
+                .register(ReadTool)
+                .register(WriteTool)
+                .register(GlobTool)
+                .register(GrepTool),
+        ),
     });
 
     let stdout: SharedStdout = Arc::new(Mutex::new(tokio::io::stdout()));

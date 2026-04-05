@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 extern crate agent as agent_crate;
 
@@ -85,19 +85,19 @@ fn client() -> ChatClient {
 async fn test_no_tool_calls_exits() {
     let client = client();
     let store = MemStore::new();
-    let tools = ToolRegistry::new(); // no tools registered
+    let tools = Arc::new(ToolRegistry::new()); // no tools registered
 
     let mut conv = Conversation::new("test-no-tools")
         .with_model("openai/gpt-4.1-nano");
 
-    let result = agent::run(&client, &store, &mut conv, &tools, "Say exactly: hello")
+    let result = agent::run(&client, &store, &mut conv, tools, "Say exactly: hello")
         .await
         .unwrap();
 
-    assert!(!result.is_empty(), "should return non-empty text");
+    assert!(!result.reply.is_empty(), "should return non-empty text");
     // Conversation should have exactly 2 messages: user + assistant
     assert_eq!(conv.messages.len(), 2);
-    println!("No tools result: {result}");
+    println!("No tools result: {}", result.reply);
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ async fn test_no_tool_calls_exits() {
 async fn test_tool_calls_loop() {
     let client = client();
     let store = MemStore::new();
-    let tools = ToolRegistry::new().register(AdditionTool);
+    let tools = Arc::new(ToolRegistry::new().register(AdditionTool));
 
     let mut conv = Conversation::new("test-tool-loop")
         .with_model("openai/gpt-4.1-nano");
@@ -117,7 +117,7 @@ async fn test_tool_calls_loop() {
         &client,
         &store,
         &mut conv,
-        &tools,
+        tools,
         "Use the addition tool to add 2 and 3. Return only the numeric result.",
     )
     .await
@@ -129,7 +129,7 @@ async fn test_tool_calls_loop() {
         "expected at least 4 messages (user, assistant+tool_call, tool, assistant), got {}",
         conv.messages.len()
     );
-    println!("Tool loop result: {result}");
+    println!("Tool loop result: {}", result.reply);
     println!("Message count: {}", conv.messages.len());
 }
 
@@ -141,7 +141,7 @@ async fn test_tool_calls_loop() {
 async fn test_live_agent_addition() {
     let client = client();
     let store = MemStore::new();
-    let tools = ToolRegistry::new().register(AdditionTool);
+    let tools = Arc::new(ToolRegistry::new().register(AdditionTool));
 
     let mut conv = Conversation::new("test-live-addition")
         .with_model("openai/gpt-4.1-nano");
@@ -150,16 +150,17 @@ async fn test_live_agent_addition() {
         &client,
         &store,
         &mut conv,
-        &tools,
+        tools,
         "Use the addition tool to compute 17 + 25. Reply with only the number, nothing else.",
     )
     .await
     .unwrap();
 
-    println!("Live agent result: {result}");
+    println!("Live agent result: {}", result.reply);
     assert!(
-        result.contains("42"),
-        "expected result to contain 42, got: {result}"
+        result.reply.contains("42"),
+        "expected result to contain 42, got: {}",
+        result.reply
     );
 
     // Verify the conversation structure:

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures_util::StreamExt;
 
 use crate::context::ContextBudget;
@@ -7,7 +9,7 @@ use crate::llm::{
     CreateChatCompletionRequest, StreamAccumulator, StringOrTextParts, SystemMessage, ToolMessage,
 };
 use crate::prompts;
-use crate::tools::ToolRegistry;
+use crate::tools::{handler, ToolRegistry};
 use storage::ConversationStore;
 
 // ---------------------------------------------------------------------------
@@ -105,7 +107,7 @@ pub async fn run<S: ConversationStore>(
     client: &ChatClient,
     store: &S,
     conv: &mut Conversation,
-    tools: &ToolRegistry,
+    tools: Arc<ToolRegistry>,
     input: &str,
 ) -> Result<RunResult, RunError<S::Error>> {
     run_with_events(client, store, conv, tools, input, None).await
@@ -118,7 +120,7 @@ pub async fn run_with_events<S: ConversationStore>(
     client: &ChatClient,
     store: &S,
     conv: &mut Conversation,
-    tools: &ToolRegistry,
+    tools: Arc<ToolRegistry>,
     input: &str,
     events: Option<&EventSink>,
 ) -> Result<RunResult, RunError<S::Error>> {
@@ -220,10 +222,14 @@ pub async fn run_with_events<S: ConversationStore>(
             _ => return Ok(RunResult { reply: text, tool_calls: executed_tool_calls }),
         };
 
-        // 7. Execute each tool call and push tool result messages.
+        // 7. Execute the batch of tool calls concurrently, then persist
+        //    results in the original call order so tool_call_id pairing stays
+        //    aligned with the assistant message.
         let budget = ContextBudget::for_model(conv.model.as_deref());
         let tool_defs_for_budget = tools.definitions();
 
+        // Emit all start events up front — the frontend can render every
+        // running tool call before any of them return.
         for call in calls {
             emit(
                 events,
@@ -232,12 +238,11 @@ pub async fn run_with_events<S: ConversationStore>(
                     arguments: call.function.arguments.clone(),
                 },
             );
+        }
 
-            let raw_result = match tools.call(&call.function.name, &call.function.arguments) {
-                Ok(val) => val.to_string(),
-                Err(e) => format!("{{\"error\": \"{e}\"}}"),
-            };
+        let batch_results = handler::execute_batch(Arc::clone(&tools), calls).await;
 
+        for (call, raw_result) in batch_results {
             let result = budget.guard_tool_result(
                 &conv.messages,
                 &tool_defs_for_budget,
