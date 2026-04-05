@@ -23,6 +23,8 @@ pub struct GetParams {}
 pub struct GetResult {
     pub model: Option<String>,
     pub conversation: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub reasoning_summary: Option<String>,
 }
 
 // ===========================================================================
@@ -41,10 +43,14 @@ impl RpcMethod for Update {
 pub struct UpdateParams {
     pub model: Option<String>,
     pub conversation: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub reasoning_summary: Option<String>,
 }
 
 #[derive(serde::Serialize)]
 pub struct UpdateResult {
     pub model: Option<String>,
     pub conversation: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub reasoning_summary: Option<String>,
 }
