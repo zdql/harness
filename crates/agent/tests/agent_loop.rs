@@ -90,7 +90,7 @@ async fn test_no_tool_calls_exits() {
     let mut conv = Conversation::new("test-no-tools")
         .with_model("openai/gpt-4.1-nano");
 
-    let result = agent::run(&client, &store, &mut conv, tools, "Say exactly: hello")
+    let result = agent::run(&client, &store, &mut conv, tools, "Say exactly: hello", None, None)
         .await
         .unwrap();
 
@@ -119,6 +119,8 @@ async fn test_tool_calls_loop() {
         &mut conv,
         tools,
         "Use the addition tool to add 2 and 3. Return only the numeric result.",
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -152,6 +154,8 @@ async fn test_live_agent_addition() {
         &mut conv,
         tools,
         "Use the addition tool to compute 17 + 25. Reply with only the number, nothing else.",
+        None,
+        None,
     )
     .await
     .unwrap();

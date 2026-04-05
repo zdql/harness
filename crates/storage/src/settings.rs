@@ -9,8 +9,19 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
     pub conversation: Option<String>,
+    /// Reasoning effort sent to thinking models. One of:
+    /// `"off"` (disable), `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`,
+    /// `"xhigh"`. `None` = use default from prompts.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// Reasoning summary verbosity. One of: `"auto"`, `"concise"`, `"detailed"`.
+    /// `None` = use default from prompts.
+    #[serde(default)]
+    pub reasoning_summary: Option<String>,
 }
 
 impl Default for Settings {
@@ -18,6 +29,8 @@ impl Default for Settings {
         Self {
             model: None,
             conversation: None,
+            reasoning_effort: None,
+            reasoning_summary: None,
         }
     }
 }

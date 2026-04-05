@@ -6,7 +6,8 @@ use crate::context::ContextBudget;
 use crate::conversation::{self, compaction, Conversation};
 use crate::llm::{
     AssistantContent, AssistantMessage, ChatClient, ChatCompletionMessage, ChatError,
-    CreateChatCompletionRequest, StreamAccumulator, StringOrTextParts, SystemMessage, ToolMessage,
+    CreateChatCompletionRequest, Reasoning, StreamAccumulator, StringOrTextParts, SystemMessage,
+    ToolMessage,
 };
 use crate::prompts;
 use crate::tools::{handler, ToolRegistry};
@@ -101,27 +102,16 @@ fn emit(sink: Option<&EventSink>, event: AgentEvent) {
 /// Append a user message, then loop: call the LLM, execute any tool calls,
 /// feed results back, and repeat until the model produces a final text answer.
 ///
-/// Thin wrapper over [`run_with_events`] with no event streaming — keeps the
-/// existing callsites (tests, etc.) unchanged.
+/// If `events` is `Some`, streams [`AgentEvent`]s to the sink as the loop
+/// progresses. Callers use this to drive a "thinking" indicator and render
+/// tool calls before the final response lands.
 pub async fn run<S: ConversationStore>(
     client: &ChatClient,
     store: &S,
     conv: &mut Conversation,
     tools: Arc<ToolRegistry>,
     input: &str,
-) -> Result<RunResult, RunError<S::Error>> {
-    run_with_events(client, store, conv, tools, input, None).await
-}
-
-/// Same as [`run`], but streams [`AgentEvent`]s to the given sink as the
-/// loop progresses. Callers use this to drive a "thinking" indicator and
-/// render tool calls before the final response lands.
-pub async fn run_with_events<S: ConversationStore>(
-    client: &ChatClient,
-    store: &S,
-    conv: &mut Conversation,
-    tools: Arc<ToolRegistry>,
-    input: &str,
+    reasoning: Option<Reasoning>,
     events: Option<&EventSink>,
 ) -> Result<RunResult, RunError<S::Error>> {
     // 1. Push user message & persist.
@@ -149,6 +139,7 @@ pub async fn run_with_events<S: ConversationStore>(
             } else {
                 Some(tool_defs)
             },
+            reasoning: reasoning.clone(),
             ..Default::default()
         };
 

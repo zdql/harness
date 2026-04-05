@@ -155,22 +155,31 @@ pub async fn send(
     let mut conv = conversation::load(&store, &params.id)
         .map_err(|e| format!("failed to load conversation: {e}"))?;
 
+    // Load settings once — used to fill both model and reasoning config.
+    let settings = storage::settings::read();
+
     // Ensure the conversation has a model set
     if conv.model.is_none() {
-        let settings = storage::settings::read();
-        conv.model = settings.model.or_else(|| {
-            Some(agent::prompts::DEFAULT_MODEL.to_string())
-        });
+        conv.model = settings
+            .model
+            .clone()
+            .or_else(|| Some(agent::prompts::DEFAULT_MODEL.to_string()));
     }
+
+    let reasoning = agent::prompts::resolve_reasoning(
+        settings.reasoning_effort.as_deref(),
+        settings.reasoning_summary.as_deref(),
+    );
 
     // Run the agent loop — this calls the LLM, executes tools, and loops.
     // Events stream out to the frontend while the loop runs.
-    let result = agent::agent::run_with_events(
+    let result = agent::agent::run(
         &state.chat_client,
         &store,
         &mut conv,
         Arc::clone(&state.tools),
         &params.message,
+        reasoning,
         events.as_ref(),
     )
     .await
