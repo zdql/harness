@@ -13,10 +13,10 @@
 
 export type * as Settings from "./settings.ts";
 export type * as Conversation from "./conversation.ts";
-
+export type * as Hud from "./hud.ts";
 import type * as Settings from "./settings.ts";
 import type * as Conversation from "./conversation.ts";
-
+import type * as Hud from "./hud.ts";
 // ===========================================================================
 // Method registry — the single source of truth for all RPC methods
 //
@@ -55,6 +55,20 @@ export interface MethodRegistry {
   "conversation.send": {
     params: Conversation.SendParams;
     result: Conversation.SendResult;
+  };
+
+  // -- HUD --------------------------------------------------------------
+  "hud.currentGitBranch.get": {
+    params: Hud.CurrentGitBranchGetParams;
+    result: Hud.CurrentGitBranchGetResult;
+  };
+  "hud.diffCounts.get": {
+    params: Hud.DiffCountsGetParams;
+    result: Hud.DiffCountsGetResult;
+  };
+  "hud.contextTokens.get": {
+    params: Hud.ContextTokensGetParams;
+    result: Hud.ContextTokensGetResult;
   };
 }
 

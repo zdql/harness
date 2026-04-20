@@ -44,6 +44,7 @@ export function DefaultAppLayout({
     <Box flexDirection="column">
       <MainContent />
       <Composer
+        rpc={rpc}
         focused={composerFocused}
         onSubmit={onSubmit}
         placeholder={placeholder}

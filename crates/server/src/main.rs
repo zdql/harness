@@ -25,6 +25,8 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
+use crate::rpc::methods::hud;
+
 // ---------------------------------------------------------------------------
 // Shared server state — initialized once, passed to async handlers
 // ---------------------------------------------------------------------------
@@ -133,6 +135,12 @@ async fn dispatch(req: Request, state: &Arc<ServerState>, stdout: &SharedStdout)
             handle::<conversation::Get, _>(req, handlers::conversation::get)
         }
         conversation::Send::NAME => handle_send(req, state, stdout).await,
+
+        // -- HUD ------------------------------------------------------------
+
+        hud::CurrentGitBranchGet::NAME => handle::<hud::CurrentGitBranchGet, _>(req, handlers::hud::current_git_branch_get),
+        hud::DiffCountsGet::NAME => handle::<hud::DiffCountsGet, _>(req, handlers::hud::diff_counts_get),
+        hud::ContextTokensGet::NAME => handle::<hud::ContextTokensGet, _>(req, handlers::hud::context_tokens_get),
 
         // -- Unknown --------------------------------------------------------
         _ => Response::error(

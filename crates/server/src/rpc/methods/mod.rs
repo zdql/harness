@@ -12,6 +12,7 @@
 
 pub mod conversation;
 pub mod settings;
+pub mod hud;
 
 use serde::{de::DeserializeOwned, Serialize};
 
