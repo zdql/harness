@@ -15,6 +15,17 @@
 /// so the agent prefers it over `/tmp` or other global locations.
 pub fn build_system_prompt(scratch_dir: Option<&std::path::Path>) -> String {
     let mut s = SYSTEM_PROMPT.to_string();
+
+    // Tell the model which directory it's running in.
+    if let Ok(cwd) = std::env::current_dir() {
+        s.push_str(&format!(
+            "\n\n## Working directory\n\n\
+             Your current working directory is `{}`. All relative paths in \
+             tool calls are resolved from here.",
+            cwd.display()
+        ));
+    }
+
     if let Some(dir) = scratch_dir {
         s.push_str(&format!(
             "\n\n## Temp directory\n\n\
@@ -196,6 +207,10 @@ pub const COMPACTION_MODEL: &str = BACKGROUND_MODEL;
 /// Max characters of a single tool result to include in the compaction
 /// transcript. Longer results are truncated with a `… [truncated]` suffix.
 pub const COMPACTION_TOOL_RESULT_MAX_CHARS: usize = 2000;
+
+/// Rough char→token ratio for HUD token-count estimates. Not model-specific;
+/// used only for the approximate `~Nk` badge above the composer.
+pub const CHARS_PER_TOKEN: usize = 4;
 
 /// System prompt sent to the compaction model.
 pub const COMPACTION_PROMPT: &str = "\
