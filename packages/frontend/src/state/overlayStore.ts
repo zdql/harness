@@ -8,7 +8,7 @@
 
 import { useSyncExternalStore } from "react";
 
-export type Overlay = "none" | "settings";
+export type Overlay = "none" | "settings" | "conversations";
 
 type Listener = () => void;
 

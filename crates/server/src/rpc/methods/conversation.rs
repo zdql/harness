@@ -48,6 +48,8 @@ pub struct ListResult {
 pub struct ConversationSummary {
     pub id: String,
     pub title: Option<String>,
+    pub updated_at: i64,
+    pub subagent_count: usize,
 }
 
 // ===========================================================================

@@ -13,6 +13,7 @@ import { Box } from "ink";
 import { MainContent } from "./MainContent.tsx";
 import { Composer } from "./Composer.tsx";
 import { SettingsView } from "./SettingsView.tsx";
+import { ConversationSelector } from "./ConversationSelector.tsx";
 import { useOverlay } from "../state/overlayStore.ts";
 import type { RpcClient } from "../rpc/client.ts";
 
@@ -36,6 +37,15 @@ export function DefaultAppLayout({
       <Box flexDirection="column">
         <MainContent />
         <SettingsView rpc={rpc} />
+      </Box>
+    );
+  }
+
+  if (overlay === "conversations") {
+    return (
+      <Box flexDirection="column">
+        <MainContent />
+        <ConversationSelector rpc={rpc} />
       </Box>
     );
   }
