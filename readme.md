@@ -82,13 +82,6 @@ ln -s "$(pwd)/bin/harness" ~/.local/bin/harness
 
 ## ⌨️ Keybindings
 
-### Home Screen
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Send message / start chat |
-| `/help` | See available commands | 
-
 ### Chat Screen
 
 | Key | Action |
@@ -96,6 +89,8 @@ ln -s "$(pwd)/bin/harness" ~/.local/bin/harness
 | `Enter` | Send message |
 | `Shift+Enter` | New line |
 | `Escape` | Back to home |
+| `/help` | See available commands | 
+
 
 ### Settings & History
 
