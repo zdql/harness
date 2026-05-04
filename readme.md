@@ -86,9 +86,8 @@ ln -s "$(pwd)/bin/harness" ~/.local/bin/harness
 
 | Key | Action |
 |-----|--------|
-| `s` | Open settings |
-| `h` | Open conversation history |
 | `Enter` | Send message / start chat |
+| `/help` | See available commands | 
 
 ### Chat Screen
 
