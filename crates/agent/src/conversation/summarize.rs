@@ -6,8 +6,8 @@
 // ---------------------------------------------------------------------------
 
 use crate::llm::{
-    ChatClient, ChatCompletionMessage, CreateChatCompletionRequest,
-    StringOrTextParts, SystemMessage, UserContent, UserMessage,
+    ChatBackend, ChatCompletionMessage, CreateChatCompletionRequest, StringOrTextParts,
+    SystemMessage, UserContent, UserMessage,
 };
 
 use super::Conversation;
@@ -25,14 +25,7 @@ pub fn build_messages(conv: &Conversation) -> Vec<ChatCompletionMessage> {
     });
 
     // Take up to 20 most recent messages to keep the request small.
-    let recent: Vec<_> = conv
-        .messages
-        .iter()
-        .rev()
-        .take(20)
-        .rev()
-        .cloned()
-        .collect();
+    let recent: Vec<_> = conv.messages.iter().rev().take(20).rev().cloned().collect();
 
     // Render the conversation as a single user message for the summarizer.
     let mut transcript = String::new();
@@ -70,10 +63,7 @@ pub fn build_messages(conv: &Conversation) -> Vec<ChatCompletionMessage> {
 
 /// Call the LLM to generate a title for the conversation.
 /// Uses a cheap/fast model to minimize cost and latency.
-pub async fn summarize(
-    client: &ChatClient,
-    conv: &Conversation,
-) -> Result<String, String> {
+pub async fn summarize(client: &dyn ChatBackend, conv: &Conversation) -> Result<String, String> {
     let messages = build_messages(conv);
 
     let request = CreateChatCompletionRequest {

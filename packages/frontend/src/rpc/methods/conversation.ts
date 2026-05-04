@@ -52,6 +52,7 @@ export interface SendParams {
 export interface SendResult {
   reply: string;
   tool_calls?: ToolCallInfo[];
+  suspended?: boolean;
 }
 
 export interface ToolCallInfo {

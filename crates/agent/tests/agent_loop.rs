@@ -4,11 +4,19 @@ use std::sync::{Arc, Mutex};
 extern crate agent as agent_crate;
 
 use agent_crate::agent;
+use agent_crate::agent::{RunOutcome, RunResult};
 use agent_crate::conversation::Conversation;
 use agent_crate::llm::ChatClient;
 use agent_crate::tools::{AdditionTool, ToolRegistry};
 use serde_json::Value;
 use storage::ConversationStore;
+
+fn unwrap_done(outcome: RunOutcome) -> RunResult {
+    match outcome {
+        RunOutcome::Done(r) => r,
+        RunOutcome::Suspended { .. } => panic!("expected Done, got Suspended"),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // In-memory store for tests
@@ -43,17 +51,37 @@ impl ConversationStore for MemStore {
         Ok(self.meta.lock().unwrap().keys().cloned().collect())
     }
     fn load_metadata(&self, id: &str) -> Result<Value, Self::Error> {
-        Ok(self.meta.lock().unwrap().get(id).cloned().unwrap_or(Value::Null))
+        Ok(self
+            .meta
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .unwrap_or(Value::Null))
     }
     fn load_messages(&self, id: &str) -> Result<Vec<Value>, Self::Error> {
-        Ok(self.msgs.lock().unwrap().get(id).cloned().unwrap_or_default())
+        Ok(self
+            .msgs
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .unwrap_or_default())
     }
     fn save_metadata(&self, id: &str, metadata: &Value) -> Result<(), Self::Error> {
-        self.meta.lock().unwrap().insert(id.to_string(), metadata.clone());
+        self.meta
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), metadata.clone());
         Ok(())
     }
     fn append_message(&self, id: &str, message: &Value) -> Result<(), Self::Error> {
-        self.msgs.lock().unwrap().entry(id.to_string()).or_default().push(message.clone());
+        self.msgs
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_default()
+            .push(message.clone());
         Ok(())
     }
     fn delete(&self, id: &str) -> Result<(), Self::Error> {
@@ -82,17 +110,28 @@ fn client() -> ChatClient {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_no_tool_calls_exits() {
     let client = client();
     let store = MemStore::new();
     let tools = Arc::new(ToolRegistry::new()); // no tools registered
 
-    let mut conv = Conversation::new("test-no-tools")
-        .with_model("openai/gpt-4.1-nano");
+    let mut conv = Conversation::new("test-no-tools").with_model("openai/gpt-4.1-nano");
 
-    let result = agent::run(&client, &store, &mut conv, tools, "Say exactly: hello", None, None, None, None)
-        .await
-        .unwrap();
+    let outcome = agent::run(
+        &client,
+        &store,
+        &mut conv,
+        tools,
+        "Say exactly: hello",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let result = unwrap_done(outcome);
 
     assert!(!result.reply.is_empty(), "should return non-empty text");
     // Conversation should have exactly 2 messages: user + assistant
@@ -105,15 +144,15 @@ async fn test_no_tool_calls_exits() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_tool_calls_loop() {
     let client = client();
     let store = MemStore::new();
     let tools = Arc::new(ToolRegistry::new().register(AdditionTool));
 
-    let mut conv = Conversation::new("test-tool-loop")
-        .with_model("openai/gpt-4.1-nano");
+    let mut conv = Conversation::new("test-tool-loop").with_model("openai/gpt-4.1-nano");
 
-    let result = agent::run(
+    let outcome = agent::run(
         &client,
         &store,
         &mut conv,
@@ -126,6 +165,7 @@ async fn test_tool_calls_loop() {
     )
     .await
     .unwrap();
+    let result = unwrap_done(outcome);
 
     // Should have looped: user → assistant(tool_call) → tool_result → assistant(final)
     assert!(
@@ -142,15 +182,15 @@ async fn test_tool_calls_loop() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_live_agent_addition() {
     let client = client();
     let store = MemStore::new();
     let tools = Arc::new(ToolRegistry::new().register(AdditionTool));
 
-    let mut conv = Conversation::new("test-live-addition")
-        .with_model("openai/gpt-4.1-nano");
+    let mut conv = Conversation::new("test-live-addition").with_model("openai/gpt-4.1-nano");
 
-    let result = agent::run(
+    let outcome = agent::run(
         &client,
         &store,
         &mut conv,
@@ -163,6 +203,7 @@ async fn test_live_agent_addition() {
     )
     .await
     .unwrap();
+    let result = unwrap_done(outcome);
 
     println!("Live agent result: {}", result.reply);
     assert!(

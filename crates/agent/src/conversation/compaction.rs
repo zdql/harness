@@ -10,7 +10,7 @@
 
 use crate::context::ContextBudget;
 use crate::llm::{
-    ChatClient, ChatCompletionMessage, ChatCompletionTool, CreateChatCompletionRequest,
+    ChatBackend, ChatCompletionMessage, ChatCompletionTool, CreateChatCompletionRequest,
     StringOrTextParts, SystemMessage, UserContent, UserMessage,
 };
 use crate::prompts;
@@ -33,8 +33,7 @@ pub fn needs_compaction(
     messages: &[ChatCompletionMessage],
     tools: &[ChatCompletionTool],
 ) -> bool {
-    let used = crate::context::estimate_messages(messages)
-        + crate::context::estimate_tools(tools);
+    let used = crate::context::estimate_messages(messages) + crate::context::estimate_tools(tools);
     let limit = budget.input_budget();
     used as f64 > limit as f64 * COMPACTION_THRESHOLD
 }
@@ -46,7 +45,7 @@ pub fn needs_compaction(
 ///
 /// Returns the summary text on success.
 pub async fn compact<S: ConversationStore>(
-    client: &ChatClient,
+    client: &dyn ChatBackend,
     store: &S,
     conv: &mut Conversation,
 ) -> Result<String, CompactionError<S::Error>> {
