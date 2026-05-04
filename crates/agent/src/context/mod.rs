@@ -164,7 +164,10 @@ mod tests {
         assert_eq!(context_limit_for_model("openai/gpt-4o"), 128_000);
         assert_eq!(context_limit_for_model("openai/gpt-4.1-nano"), 128_000);
         assert_eq!(context_limit_for_model("anthropic/claude-3-opus"), 200_000);
-        assert_eq!(context_limit_for_model("unknown/model"), DEFAULT_CONTEXT_LIMIT);
+        assert_eq!(
+            context_limit_for_model("unknown/model"),
+            DEFAULT_CONTEXT_LIMIT
+        );
     }
 
     #[test]

@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use super::common::{
-    Annotation, ChoiceLogprobs, CompletionUsage, FinishReason, ServiceTier,
-};
+use super::common::{Annotation, ChoiceLogprobs, CompletionUsage, FinishReason, ServiceTier};
 use super::tools::{FunctionCall, ToolCall};
 
 // ---------------------------------------------------------------------------

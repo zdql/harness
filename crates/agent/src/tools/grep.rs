@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use std::fs;
 use std::path::Path;
 
 use crate::llm::{ChatCompletionTool, FunctionDefinition};
 
-use super::{run_blocking, Tool, ToolError};
+use super::{Tool, ToolError, run_blocking};
 
 pub struct GrepTool;
 
@@ -72,8 +72,8 @@ impl Tool for GrepTool {
             serde_json::from_str(arguments).map_err(|e| ToolError(format!("bad args: {e}")))?;
 
         run_blocking(move || {
-            let re = Regex::new(&args.pattern)
-                .map_err(|e| ToolError(format!("invalid regex: {e}")))?;
+            let re =
+                Regex::new(&args.pattern).map_err(|e| ToolError(format!("invalid regex: {e}")))?;
 
             let search_path = args.path.as_deref().unwrap_or(".");
             let path = Path::new(search_path);
@@ -84,10 +84,7 @@ impl Tool for GrepTool {
                 search_file(&re, path, args.limit, &mut matches);
             } else if path.is_dir() {
                 let file_pattern = match &args.glob {
-                    Some(g) => format!("{}/{}",
-                        search_path.trim_end_matches('/'),
-                        g
-                    ),
+                    Some(g) => format!("{}/{}", search_path.trim_end_matches('/'), g),
                     None => format!("{}/**/*", search_path.trim_end_matches('/')),
                 };
 

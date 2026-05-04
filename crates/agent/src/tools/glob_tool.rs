@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 use crate::llm::{ChatCompletionTool, FunctionDefinition};
 
-use super::{run_blocking, Tool, ToolError};
+use super::{Tool, ToolError, run_blocking};
 
 pub struct GlobTool;
 

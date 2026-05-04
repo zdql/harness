@@ -8,5 +8,5 @@
 // ---------------------------------------------------------------------------
 
 pub mod conversation;
-pub mod settings;
 pub mod hud;
+pub mod settings;
