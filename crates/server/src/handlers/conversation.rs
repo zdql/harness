@@ -4,15 +4,15 @@
 
 use std::sync::Arc;
 
-use crate::rpc::methods::conversation::{
-    CreateParams, CreateResult, GetParams, GetResult, ListParams, ListResult,
-    ConversationSummary, MessageEntry, SetModelParams, SetModelResult,
-    SwitchParams, SwitchResult, SendParams, SendResult, ToolCallInfo,
-};
 use crate::ServerState;
-use agent::conversation::{self, summarize, Conversation};
-use storage::fs::FsStore;
+use crate::rpc::methods::conversation::{
+    ConversationSummary, CreateParams, CreateResult, GetParams, GetResult, ListParams, ListResult,
+    MessageEntry, SendParams, SendResult, SetModelParams, SetModelResult, SwitchParams,
+    SwitchResult, ToolCallInfo,
+};
+use agent::conversation::{self, Conversation, summarize};
 use storage::ConversationStore;
+use storage::fs::FsStore;
 
 fn store() -> Result<FsStore, String> {
     FsStore::new().map_err(|e| format!("failed to open store: {e}"))
@@ -34,8 +34,7 @@ pub fn create(_params: CreateParams) -> Result<CreateResult, String> {
     // Set as active conversation
     let mut settings = storage::settings::read();
     settings.conversation = Some(id.clone());
-    storage::settings::write(&settings)
-        .map_err(|e| format!("failed to write settings: {e}"))?;
+    storage::settings::write(&settings).map_err(|e| format!("failed to write settings: {e}"))?;
 
     Ok(CreateResult { id })
 }
@@ -47,8 +46,12 @@ pub fn list(_params: ListParams) -> Result<ListResult, String> {
 
     let mut conversations = Vec::new();
     for id in ids {
-        let meta = store.load_metadata(&id).map_err(|e| format!("failed to load metadata: {e}"))?;
-        let msgs = store.load_messages(&id).map_err(|e| format!("failed to load messages: {e}"))?;
+        let meta = store
+            .load_metadata(&id)
+            .map_err(|e| format!("failed to load metadata: {e}"))?;
+        let msgs = store
+            .load_messages(&id)
+            .map_err(|e| format!("failed to load messages: {e}"))?;
 
         // Skip conversations that never had a real exchange
         if msgs.len() <= 1 {
@@ -71,8 +74,7 @@ pub fn switch(params: SwitchParams) -> Result<SwitchResult, String> {
 
     let mut settings = storage::settings::read();
     settings.conversation = Some(params.id.clone());
-    storage::settings::write(&settings)
-        .map_err(|e| format!("failed to write settings: {e}"))?;
+    storage::settings::write(&settings).map_err(|e| format!("failed to write settings: {e}"))?;
 
     Ok(SwitchResult { id: params.id })
 }
@@ -165,24 +167,22 @@ pub fn set_model(params: SetModelParams) -> Result<SetModelResult, String> {
 
 /// Handle `conversation.send` — send a user message through the agent loop.
 ///
-/// This is the core integration point: it loads the conversation from disk,
-/// runs the agent loop (LLM calls + tool execution), persists the result,
-/// and returns the assistant's final text reply.
+/// Returns the assistant's reply immediately. If subagents are still running,
+/// `suspended: true` is set in the result and a background task continues
+/// the loop — streaming events via the event sink and emitting a final
+/// `ContinuationDone` event when all subagents finish.
 pub async fn send(
     params: SendParams,
-    state: &Arc<ServerState>,
+    state: &ServerState,
     events: Option<agent::agent::EventSink>,
 ) -> Result<SendResult, String> {
     let store = store()?;
 
-    // Load the conversation (or error if it doesn't exist)
     let mut conv = conversation::load(&store, &params.id)
         .map_err(|e| format!("failed to load conversation: {e}"))?;
 
-    // Load settings once — used to fill both model and reasoning config.
     let settings = storage::settings::read();
 
-    // Ensure the conversation has a model set
     if conv.model.is_none() {
         conv.model = settings
             .model
@@ -195,9 +195,6 @@ pub async fn send(
         settings.reasoning_summary.as_deref(),
     );
 
-    // Per-conversation scratch directory lives alongside the conversation's
-    // own data. The agent is told about it in the system prompt so it
-    // writes scratch files here instead of `/tmp`.
     let scratch_dir = scratch_dir_for(&conv.id);
     let scratch_dir = match std::fs::create_dir_all(&scratch_dir) {
         Ok(()) => Some(scratch_dir),
@@ -207,34 +204,28 @@ pub async fn send(
         }
     };
 
-    // Equip this top-level run with subagent support. Each subagent's
-    // conversation is persisted under
-    // `~/.agent-harness/conversations/<conv_id>/subagent/<sub_id>.{json,jsonl}`
-    // so it's joinable from the subagent id recorded in the parent's
-    // `start_subagent` tool result.
     let subagent_root = subagent_root_for(&conv.id);
     let ctx = agent::subagents::SubagentContext {
-        chat_client: state.chat_client.clone(),
+        chat_client: Arc::clone(&state.chat_client),
         base_tools: Arc::clone(&state.tools),
         parent_event_sink: events.clone(),
         depth: 0,
+        parent_id: None,
         model: conv.model.clone(),
         reasoning: reasoning.clone(),
         subagent_root,
         scratch_dir: scratch_dir.clone(),
+        registry: Arc::clone(agent::subagents::SubagentRegistry::global()),
     };
     let (mut inbox, tools) = agent::subagents::equip(ctx);
 
-    // Run the agent loop — this calls the LLM, executes tools, and loops.
-    // Events stream out to the frontend while the loop runs. The loop stays
-    // alive until every in-flight subagent has reported back.
-    let result = agent::agent::run(
-        &state.chat_client,
+    let outcome = agent::agent::run(
+        state.chat_client.as_ref(),
         &store,
         &mut conv,
-        tools,
+        tools.clone(),
         &params.message,
-        reasoning,
+        reasoning.clone(),
         events.as_ref(),
         Some(&mut inbox),
         scratch_dir.as_deref(),
@@ -242,12 +233,122 @@ pub async fn send(
     .await
     .map_err(|e| format!("agent error: {e}"))?;
 
-    // Spawn background summarization if needed
+    maybe_summarize(Arc::clone(&state.chat_client), &conv);
+
+    match outcome {
+        agent::agent::RunOutcome::Done(result) => Ok(SendResult {
+            reply: result.reply,
+            tool_calls: map_tool_calls(result.tool_calls),
+            suspended: false,
+        }),
+        agent::agent::RunOutcome::Suspended { result, .. } => {
+            let reply = result.reply.clone();
+            let tc = map_tool_calls(result.tool_calls);
+
+            // Spawn a background watcher: wait for subagent results, inject
+            // them, and re-enter the agent loop. Events keep flowing through
+            // the same event sink so the frontend sees live progress.
+            let client = Arc::clone(&state.chat_client);
+            let event_sink = events.clone();
+            tokio::spawn(async move {
+                if let Err(e) = subagent_continuation_loop(
+                    client,
+                    conv,
+                    tools,
+                    inbox,
+                    reasoning,
+                    event_sink,
+                    scratch_dir,
+                )
+                .await
+                {
+                    eprintln!("continuation error: {e}");
+                }
+            });
+
+            Ok(SendResult {
+                reply,
+                tool_calls: tc,
+                suspended: true,
+            })
+        }
+    }
+}
+
+/// Background loop that waits for subagent results, injects them into the
+/// conversation, and re-enters the agent loop until all subagents are done.
+///
+/// Each iteration reloads the conversation from storage before injecting the
+/// next result. That's load-bearing: while we're suspended, the user may have
+/// sent another message through a fresh `conversation.send` (which writes to
+/// the same on-disk conversation). Reloading lets the watcher's resumed LLM
+/// turn see those messages instead of operating on a stale in-memory copy.
+async fn subagent_continuation_loop(
+    client: Arc<dyn agent::llm::ChatBackend>,
+    initial_conv: Conversation,
+    tools: Arc<agent::tools::ToolRegistry>,
+    mut inbox: agent::subagents::SubagentInbox,
+    reasoning: Option<agent::llm::Reasoning>,
+    events: Option<agent::agent::EventSink>,
+    scratch_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    let conv_id = initial_conv.id.clone();
+    drop(initial_conv);
+
+    loop {
+        let sub_result = match inbox.recv().await {
+            Some(r) => r,
+            None => return Ok(()),
+        };
+
+        let store = store()?;
+        // Pull the latest on-disk state so any user messages sent during the
+        // suspension window are visible to the resumed LLM call.
+        let mut conv = conversation::load(&store, &conv_id)
+            .map_err(|e| format!("conv reload failed: {e}"))?;
+
+        agent::agent::inject_subagent_result(
+            &store,
+            &mut conv,
+            inbox.pending_counter(),
+            sub_result,
+        )
+        .map_err(|e| format!("inject error: {e}"))?;
+
+        let outcome = agent::agent::resume(
+            client.as_ref(),
+            &store,
+            &mut conv,
+            tools.clone(),
+            reasoning.clone(),
+            events.as_ref(),
+            Some(&mut inbox),
+            scratch_dir.as_deref(),
+        )
+        .await
+        .map_err(|e| format!("resume error: {e}"))?;
+
+        match outcome {
+            agent::agent::RunOutcome::Done(result) => {
+                if let Some(ref sink) = events {
+                    let _ = sink.send(agent::agent::AgentEvent::ContinuationDone {
+                        reply: result.reply,
+                    });
+                }
+                return Ok(());
+            }
+            agent::agent::RunOutcome::Suspended { .. } => {
+                // Still more subagents pending — loop back to wait.
+            }
+        }
+    }
+}
+
+fn maybe_summarize(client: Arc<dyn agent::llm::ChatBackend>, conv: &Conversation) {
     if conv.needs_summarization() {
-        let client = state.chat_client.clone();
         let conv_clone = conv.clone();
         tokio::spawn(async move {
-            match summarize::summarize(&client, &conv_clone).await {
+            match summarize::summarize(client.as_ref(), &conv_clone).await {
                 Ok(title) => {
                     if let Ok(fs) = FsStore::new() {
                         if let Ok(mut fresh) = conversation::load(&fs, &conv_clone.id) {
@@ -261,15 +362,16 @@ pub async fn send(
             }
         });
     }
+}
 
-    Ok(SendResult {
-        reply: result.reply,
-        tool_calls: result.tool_calls.into_iter().map(|tc| ToolCallInfo {
+fn map_tool_calls(tcs: Vec<agent::agent::ToolCallInfo>) -> Vec<ToolCallInfo> {
+    tcs.into_iter()
+        .map(|tc| ToolCallInfo {
             name: tc.name,
             arguments: tc.arguments,
             result: tc.result,
-        }).collect(),
-    })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

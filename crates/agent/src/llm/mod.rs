@@ -1,3 +1,4 @@
+mod backend;
 mod client;
 mod common;
 mod message;
@@ -6,6 +7,7 @@ mod response;
 mod streaming;
 mod tools;
 
+pub use backend::*;
 pub use client::*;
 pub use common::*;
 pub use message::*;

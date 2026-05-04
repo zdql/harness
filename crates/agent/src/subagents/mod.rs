@@ -23,14 +23,17 @@
 // ---------------------------------------------------------------------------
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::agent::EventSink;
-use crate::llm::{ChatClient, Reasoning};
+use crate::llm::{ChatBackend, Reasoning};
 use crate::tools::{StartSubagentTool, ToolRegistry};
+
+pub mod registry;
+pub use registry::{RegistryEntry, RegistryView, SubagentRegistry};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,6 +78,13 @@ impl SubagentInbox {
         self.pending.load(Ordering::Acquire)
     }
 
+    /// Shared reference to the pending counter. Needed by callers outside
+    /// this crate (e.g. the server's continuation loop) that pass it to
+    /// `inject_subagent_result`.
+    pub fn pending_counter(&self) -> &Arc<AtomicUsize> {
+        &self.pending
+    }
+
     /// Drain every result currently queued without blocking.
     pub fn try_drain(&mut self) -> Vec<SubagentResult> {
         let mut out = Vec::new();
@@ -94,7 +104,7 @@ impl SubagentInbox {
 /// `StartSubagentTool` instance and passed down to each spawned child.
 #[derive(Clone)]
 pub struct SubagentContext {
-    pub chat_client: ChatClient,
+    pub chat_client: Arc<dyn ChatBackend>,
     /// Base tools available to every subagent (WITHOUT `start_subagent` — that
     /// gets added per-level so each level has its own inbox).
     pub base_tools: Arc<ToolRegistry>,
@@ -103,9 +113,12 @@ pub struct SubagentContext {
     /// forwarded to this sink.
     pub parent_event_sink: Option<EventSink>,
     pub depth: usize,
+    /// Direct parent's subagent id, or `None` for the top-level agent. Used
+    /// to record the spawn tree in [`SubagentRegistry`].
+    pub parent_id: Option<String>,
     pub model: Option<String>,
     pub reasoning: Option<Reasoning>,
-    /// Directory where THIS agent's subagent conversations should be written.
+    /// Where THIS agent's subagent conversations should be written.
     /// Each spawned subagent's conversation lives at
     /// `<subagent_root>/<subagent_id>.{json,jsonl}` and its own subagents
     /// (grandchildren) live under `<subagent_root>/<subagent_id>/subagent/`.
@@ -114,6 +127,10 @@ pub struct SubagentContext {
     /// every level writes temp files into the same conversation-scoped
     /// space rather than `/tmp`.
     pub scratch_dir: Option<PathBuf>,
+    /// Process-wide registry of running subagents. Tests construct their own
+    /// to avoid sharing state across runs; production passes
+    /// `SubagentRegistry::global().clone()`.
+    pub registry: Arc<SubagentRegistry>,
 }
 
 // ---------------------------------------------------------------------------

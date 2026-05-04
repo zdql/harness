@@ -29,6 +29,7 @@ fn simple_request(model: &str, prompt: &str) -> CreateChatCompletionRequest {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_basic_completion() {
     let resp = client()
         .create_chat_completion(&simple_request(
@@ -50,6 +51,7 @@ async fn test_basic_completion() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_system_message() {
     let mut req = simple_request("openai/gpt-4.1-nano", "What are you?");
     req.messages.insert(
@@ -73,6 +75,7 @@ async fn test_system_message() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_developer_message() {
     let mut req = simple_request("openai/gpt-4.1-nano", "What are you?");
     req.messages.insert(
@@ -96,6 +99,7 @@ async fn test_developer_message() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_streaming() {
     let mut stream = client()
         .create_chat_completion_stream(&simple_request(
@@ -129,8 +133,12 @@ async fn test_streaming() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_tool_calling() {
-    let mut req = simple_request("openai/gpt-4.1-nano", "What is the weather in San Francisco?");
+    let mut req = simple_request(
+        "openai/gpt-4.1-nano",
+        "What is the weather in San Francisco?",
+    );
     req.tools = Some(vec![ChatCompletionTool::Function {
         function: FunctionDefinition {
             name: "get_weather".to_string(),
@@ -161,9 +169,7 @@ async fn test_tool_calling() {
         model: Some("openai/gpt-4.1-nano".to_string()),
         messages: vec![
             ChatCompletionMessage::User(UserMessage {
-                content: UserContent::String(
-                    "What is the weather in San Francisco?".to_string(),
-                ),
+                content: UserContent::String("What is the weather in San Francisco?".to_string()),
                 name: None,
             }),
             ChatCompletionMessage::Assistant(AssistantMessage {
@@ -198,6 +204,7 @@ async fn test_tool_calling() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_forced_tool_choice() {
     let mut req = simple_request("openai/gpt-4.1-nano", "Hello, how are you?");
     req.tools = Some(vec![ChatCompletionTool::Function {
@@ -232,6 +239,7 @@ async fn test_forced_tool_choice() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_json_mode() {
     let mut req = simple_request(
         "openai/gpt-4.1-nano",
@@ -251,6 +259,7 @@ async fn test_json_mode() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_structured_output() {
     let mut req = simple_request("openai/gpt-4.1-nano", "Give me a color.");
     req.response_format = Some(ResponseFormat::JsonSchema {
@@ -281,6 +290,7 @@ async fn test_structured_output() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_multi_turn() {
     let req = CreateChatCompletionRequest {
         model: Some("openai/gpt-4.1-nano".to_string()),
@@ -326,6 +336,7 @@ async fn test_multi_turn() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_usage_stats() {
     let resp = client()
         .create_chat_completion(&simple_request("openai/gpt-4.1-nano", "Hi."))
@@ -345,6 +356,7 @@ async fn test_usage_stats() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_stop_sequence() {
     let mut req = simple_request(
         "openai/gpt-4.1-nano",
@@ -362,6 +374,7 @@ async fn test_stop_sequence() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_provider_routing() {
     let mut req = simple_request("openai/gpt-4.1-nano", "Say hi.");
     req.provider = Some(ProviderRouting {
@@ -391,6 +404,7 @@ async fn test_provider_routing() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_multi_model_fallback() {
     let mut req = simple_request("", "Say hi.");
     req.model = None;
@@ -410,6 +424,7 @@ async fn test_multi_model_fallback() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_invalid_api_key() {
     let bad_client = ChatClient::new("sk-or-invalid");
     let req = simple_request("openai/gpt-4.1-nano", "Hello");
@@ -431,6 +446,7 @@ async fn test_invalid_api_key() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_streaming_usage() {
     let mut stream = client()
         .create_chat_completion_stream(&simple_request("openai/gpt-4.1-nano", "Say hi."))
@@ -457,6 +473,7 @@ async fn test_streaming_usage() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_session_id() {
     let mut req = simple_request("openai/gpt-4.1-nano", "Say hi.");
     req.session_id = Some("test-session-12345".to_string());

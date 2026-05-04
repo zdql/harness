@@ -134,6 +134,11 @@ pub struct SendResult {
     /// Tool calls that were executed during the agent loop.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCallInfo>,
+    /// True when subagents are still running in the background. The agent
+    /// loop will resume automatically when they finish; the frontend should
+    /// keep its event listener active for continuation events.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub suspended: bool,
 }
 
 #[derive(serde::Serialize)]

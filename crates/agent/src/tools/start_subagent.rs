@@ -12,12 +12,12 @@
 //      parent never blocks on the child.
 // ---------------------------------------------------------------------------
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use tokio::sync::mpsc;
 
 use crate::agent::AgentEvent;
@@ -25,7 +25,7 @@ use crate::conversation::{self, Conversation};
 use crate::llm::{ChatCompletionTool, FunctionDefinition};
 use crate::prompts::{MAX_CONCURRENT_SUBAGENTS_PER_PARENT, MAX_SUBAGENT_DEPTH};
 use crate::subagents::{
-    self, SubagentContext, SubagentResult, SubagentSender, SubagentStatus,
+    self, RegistryEntry, SubagentContext, SubagentResult, SubagentSender, SubagentStatus,
 };
 
 use super::{Tool, ToolError};
@@ -149,13 +149,19 @@ impl Tool for StartSubagentTool {
         let tx = self.tx.clone();
         let concurrent = Arc::clone(&self.concurrent);
         let spawning_sink = self.ctx.parent_event_sink.clone();
+        let registry = Arc::clone(&self.ctx.registry);
+        let registry_for_remove = Arc::clone(&self.ctx.registry);
         let task_text = args.task.clone();
         let context_text = args.context.clone();
         let id_for_task = subagent_id.clone();
+        let id_for_registry = subagent_id.clone();
+        let parent_id = self.ctx.parent_id.clone();
+        let depth = self.ctx.depth;
+        let task_for_registry = args.task.clone();
 
-        tokio::spawn(async move {
-            let outcome = run_subagent(ctx, id_for_task.clone(), task_text.clone(), context_text)
-                .await;
+        let handle = tokio::spawn(async move {
+            let outcome =
+                run_subagent(ctx, id_for_task.clone(), task_text.clone(), context_text).await;
 
             let (status, output) = match outcome {
                 Ok(reply) => (SubagentStatus::Completed, reply),
@@ -163,6 +169,7 @@ impl Tool for StartSubagentTool {
             };
 
             concurrent.fetch_sub(1, Ordering::AcqRel);
+            registry_for_remove.remove(&id_for_task);
 
             // Emit SubagentCompleted on the SPAWNING agent's sink so the UI
             // can close out its "subagent running" indicator immediately.
@@ -180,6 +187,15 @@ impl Tool for StartSubagentTool {
                 status,
                 output,
             });
+        });
+
+        registry.insert(RegistryEntry {
+            id: id_for_registry,
+            parent_id,
+            task: task_for_registry,
+            depth,
+            started_at: std::time::SystemTime::now(),
+            handle,
         });
 
         Ok(json!({
@@ -204,8 +220,7 @@ async fn run_subagent(
     // 1. Set up event forwarding: the child has its own sink; every event it
     //    emits is wrapped as `SubagentEvent { subagent_id, inner }` and
     //    forwarded to the spawning agent's sink.
-    let (child_event_tx, mut child_event_rx) =
-        mpsc::unbounded_channel::<AgentEvent>();
+    let (child_event_tx, mut child_event_rx) = mpsc::unbounded_channel::<AgentEvent>();
     if let Some(parent_sink) = parent_ctx.parent_event_sink.clone() {
         let id_for_wrap = subagent_id.clone();
         tokio::spawn(async move {
@@ -244,30 +259,31 @@ async fn run_subagent(
     // 5. Equip this child with ITS OWN subagent inbox so grandchildren's
     //    results route back to this child (not up to the grandparent).
     let nested_ctx = SubagentContext {
-        chat_client: parent_ctx.chat_client.clone(),
+        chat_client: Arc::clone(&parent_ctx.chat_client),
         base_tools: Arc::clone(&parent_ctx.base_tools),
         parent_event_sink: Some(child_event_tx.clone()),
         depth: parent_ctx.depth + 1,
+        parent_id: Some(subagent_id.clone()),
         model: parent_ctx.model.clone(),
         reasoning: parent_ctx.reasoning.clone(),
-        subagent_root: parent_ctx
-            .subagent_root
-            .join(&subagent_id)
-            .join("subagent"),
+        subagent_root: parent_ctx.subagent_root.join(&subagent_id).join("subagent"),
         scratch_dir: parent_ctx.scratch_dir.clone(),
+        registry: Arc::clone(&parent_ctx.registry),
     };
     let (mut inbox, tools) = subagents::equip(nested_ctx);
 
-    // 6. Run the child agent loop to completion.
+    // 6. Run the child agent loop to completion. Subagents block on their
+    //    own children (grandchildren of the parent) — only the top-level
+    //    agent suspends.
     let reasoning = parent_ctx.reasoning.clone();
     let scratch = parent_ctx.scratch_dir.clone();
-    let result = crate::agent::run(
-        &parent_ctx.chat_client,
+    let mut outcome = crate::agent::run(
+        parent_ctx.chat_client.as_ref(),
         &store,
         &mut conv,
-        tools,
+        tools.clone(),
         &input,
-        reasoning,
+        reasoning.clone(),
         Some(&child_event_tx),
         Some(&mut inbox),
         scratch.as_deref(),
@@ -275,11 +291,40 @@ async fn run_subagent(
     .await
     .map_err(|e| format!("subagent agent error: {e}"))?;
 
-    // Persist the final conversation (agent::run already persists each
-    // message; this is redundant but harmless).
-    let _ = conversation::save(&store, &conv);
-
-    Ok(result.reply)
+    // If the child was suspended (its own sub-subagents are pending), block
+    // here until they all finish. This is intentional: subagents always
+    // return a complete result to their parent.
+    loop {
+        match outcome {
+            crate::agent::RunOutcome::Done(result) => {
+                let _ = conversation::save(&store, &conv);
+                return Ok(result.reply);
+            }
+            crate::agent::RunOutcome::Suspended { .. } => {
+                if let Some(sub_result) = inbox.recv().await {
+                    crate::agent::inject_subagent_result(
+                        &store,
+                        &mut conv,
+                        &inbox.pending,
+                        sub_result,
+                    )
+                    .map_err(|e| format!("failed to inject sub-subagent result: {e}"))?;
+                }
+                outcome = crate::agent::resume(
+                    parent_ctx.chat_client.as_ref(),
+                    &store,
+                    &mut conv,
+                    tools.clone(),
+                    reasoning.clone(),
+                    Some(&child_event_tx),
+                    Some(&mut inbox),
+                    scratch.as_deref(),
+                )
+                .await
+                .map_err(|e| format!("subagent resume error: {e}"))?;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

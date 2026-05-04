@@ -5,4 +5,5 @@ pub mod llm;
 pub mod prompts;
 pub mod subagents;
 pub mod tasks;
+pub mod testing;
 pub mod tools;

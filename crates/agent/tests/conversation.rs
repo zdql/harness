@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 extern crate agent as agent_crate;
 
-use agent_crate::conversation::{self, summarize, Conversation};
+use agent_crate::conversation::{self, Conversation, summarize};
 use agent_crate::llm::{
     AssistantContent, AssistantMessage, ChatClient, ChatCompletionMessage, UserContent,
 };
@@ -386,10 +386,7 @@ fn build_messages_caps_at_20_messages() {
                     !s.contains("message 0\n"),
                     "should not contain earliest messages"
                 );
-                assert!(
-                    !s.contains("message 9\n"),
-                    "should not contain message 9"
-                );
+                assert!(!s.contains("message 9\n"), "should not contain message 9");
                 assert!(s.contains("message 10"), "should contain message 10");
                 assert!(s.contains("message 29"), "should contain message 29");
             }
@@ -459,14 +456,13 @@ fn client() -> ChatClient {
 }
 
 #[tokio::test]
+#[ignore = "live LLM — requires OPENROUTER_API_KEY; run with `cargo test -- --ignored`"]
 async fn test_summarize_returns_short_title() {
     let client = client();
     let mut conv = Conversation::new("live-summarize").with_model("openai/gpt-4.1-nano");
 
     conv.push_user("What is the capital of France?");
-    conv.push_message(make_assistant_msg(
-        "The capital of France is Paris.",
-    ));
+    conv.push_message(make_assistant_msg("The capital of France is Paris."));
 
     let title = summarize::summarize(&client, &conv).await.unwrap();
 

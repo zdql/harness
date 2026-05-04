@@ -17,10 +17,10 @@ mod rpc;
 
 use std::sync::Arc;
 
-use agent::llm::ChatClient;
+use agent::llm::{ChatBackend, ChatClient};
 use agent::tools::{AdditionTool, BashTool, GlobTool, GrepTool, ReadTool, ToolRegistry, WriteTool};
 use rpc::methods::RpcMethod;
-use rpc::{Notification, Request, Response, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
+use rpc::{INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND, Notification, Request, Response};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
@@ -32,7 +32,7 @@ use crate::rpc::methods::hud;
 // ---------------------------------------------------------------------------
 
 pub struct ServerState {
-    pub chat_client: ChatClient,
+    pub chat_client: Arc<dyn ChatBackend>,
     pub tools: Arc<ToolRegistry>,
 }
 
@@ -55,7 +55,7 @@ async fn main() {
     }
 
     let state = Arc::new(ServerState {
-        chat_client: ChatClient::new(&api_key).with_title("harness"),
+        chat_client: Arc::new(ChatClient::new(&api_key).with_title("harness")),
         tools: Arc::new(
             ToolRegistry::new()
                 .register(AdditionTool)
@@ -76,16 +76,20 @@ async fn main() {
             continue;
         }
 
-        let response = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => dispatch(req, &state, &stdout).await,
-            Err(e) => Response::error(
-                rpc::RequestId::Number(0),
-                rpc::PARSE_ERROR,
-                format!("parse error: {e}"),
-            ),
-        };
+        let state = Arc::clone(&state);
+        let stdout = Arc::clone(&stdout);
+        tokio::spawn(async move {
+            let response = match serde_json::from_str::<Request>(&line) {
+                Ok(req) => dispatch(req, &state, &stdout).await,
+                Err(e) => Response::error(
+                    rpc::RequestId::Number(0),
+                    rpc::PARSE_ERROR,
+                    format!("parse error: {e}"),
+                ),
+            };
 
-        write_json(&stdout, &response).await;
+            write_json(&stdout, &response).await;
+        });
     }
 }
 
@@ -113,7 +117,7 @@ fn notification(method: impl Into<String>, params: Value) -> Notification {
 // Dispatcher
 // ---------------------------------------------------------------------------
 
-async fn dispatch(req: Request, state: &Arc<ServerState>, stdout: &SharedStdout) -> Response {
+async fn dispatch(req: Request, state: &ServerState, stdout: &SharedStdout) -> Response {
     use rpc::methods::{conversation, settings};
 
     match req.method.as_str() {
@@ -131,20 +135,25 @@ async fn dispatch(req: Request, state: &Arc<ServerState>, stdout: &SharedStdout)
         conversation::Switch::NAME => {
             handle::<conversation::Switch, _>(req, handlers::conversation::switch)
         }
-        conversation::Get::NAME => {
-            handle::<conversation::Get, _>(req, handlers::conversation::get)
-        }
+        conversation::Get::NAME => handle::<conversation::Get, _>(req, handlers::conversation::get),
         conversation::SetModel::NAME => {
             handle::<conversation::SetModel, _>(req, handlers::conversation::set_model)
         }
         conversation::Send::NAME => handle_send(req, state, stdout).await,
 
         // -- HUD ------------------------------------------------------------
-
-        hud::CurrentGitBranchGet::NAME => handle::<hud::CurrentGitBranchGet, _>(req, handlers::hud::current_git_branch_get),
-        hud::DiffCountsGet::NAME => handle::<hud::DiffCountsGet, _>(req, handlers::hud::diff_counts_get),
-        hud::ContextTokensGet::NAME => handle::<hud::ContextTokensGet, _>(req, handlers::hud::context_tokens_get),
-        hud::CurrentModelGet::NAME => handle::<hud::CurrentModelGet, _>(req, handlers::hud::current_model_get),
+        hud::CurrentGitBranchGet::NAME => {
+            handle::<hud::CurrentGitBranchGet, _>(req, handlers::hud::current_git_branch_get)
+        }
+        hud::DiffCountsGet::NAME => {
+            handle::<hud::DiffCountsGet, _>(req, handlers::hud::diff_counts_get)
+        }
+        hud::ContextTokensGet::NAME => {
+            handle::<hud::ContextTokensGet, _>(req, handlers::hud::context_tokens_get)
+        }
+        hud::CurrentModelGet::NAME => {
+            handle::<hud::CurrentModelGet, _>(req, handlers::hud::current_model_get)
+        }
 
         // -- Unknown --------------------------------------------------------
         _ => Response::error(
@@ -156,14 +165,10 @@ async fn dispatch(req: Request, state: &Arc<ServerState>, stdout: &SharedStdout)
 }
 
 /// Handle `conversation.send` with event streaming. Events emitted by the
-/// agent loop are forwarded to stdout as JSON-RPC notifications while the
-/// request is still in-flight; the final response is written when the loop
-/// returns.
-async fn handle_send(
-    req: Request,
-    state: &Arc<ServerState>,
-    stdout: &SharedStdout,
-) -> Response {
+/// agent loop (and any background continuation) are forwarded to stdout as
+/// JSON-RPC notifications. The response is returned as soon as the model
+/// produces its first reply — even if subagents are still running.
+async fn handle_send(req: Request, state: &ServerState, stdout: &SharedStdout) -> Response {
     use rpc::methods::conversation::SendParams;
 
     let id = req.id.clone();
@@ -174,24 +179,22 @@ async fn handle_send(
         }
     };
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<agent::agent::AgentEvent>();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<agent::agent::AgentEvent>();
 
-    // Forwarder: drain events → stdout as notifications. Ends when `tx` is
-    // dropped (i.e., the handler returns), at which point `recv()` yields None.
+    // Forwarder: drain events → stdout as notifications. Runs until every
+    // clone of `tx` is dropped — including any clone held by a background
+    // continuation task spawned by `send()`.
     let stdout_for_fwd = Arc::clone(stdout);
-    let forwarder = tokio::spawn(async move {
+    tokio::spawn(async move {
+        let mut rx = rx;
         while let Some(event) = rx.recv().await {
-            let params = serde_json::to_value(&event)
-                .unwrap_or_else(|_| serde_json::json!({}));
+            let params = serde_json::to_value(&event).unwrap_or_else(|_| serde_json::json!({}));
             let notif = notification("agent.event", params);
             write_json(&stdout_for_fwd, &notif).await;
         }
     });
 
     let result = handlers::conversation::send(params, state, Some(tx)).await;
-
-    // Ensure all queued notifications flush before the final response.
-    let _ = forwarder.await;
 
     match result {
         Ok(result) => {
@@ -246,7 +249,9 @@ fn load_dotenv() {
                         let val = val.trim().trim_matches('"').trim_matches('\'');
                         if std::env::var(key).is_err() {
                             // SAFETY: called once at startup before any threads
-                            unsafe { std::env::set_var(key, val); }
+                            unsafe {
+                                std::env::set_var(key, val);
+                            }
                         }
                     }
                 }
