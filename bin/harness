@@ -1,13 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Resolve $0 to an absolute path, following symlinks portably (works on macOS & Linux)
+SELF="$0"
+# If invoked by bare name via PATH, resolve to the full path first
+if [ "${SELF##*/}" = "$SELF" ]; then
+  SELF="$(command -v "$SELF")"
+fi
+# Follow symlinks one hop at a time
+while [ -L "$SELF" ]; do
+  DIR="$(cd "$(dirname "$SELF")" && pwd)"
+  SELF="$(readlink "$SELF")"
+  # If readlink returned a relative path, make it absolute
+  case "$SELF" in
+    /*) ;;
+    *)  SELF="$DIR/$SELF" ;;
+  esac
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 SERVER_BIN="$ROOT/target/debug/harness-server"
 
 # Build the Rust server if missing or outdated
 if [ ! -f "$SERVER_BIN" ] || [ -n "$(find "$ROOT/crates" -name '*.rs' -newer "$SERVER_BIN" 2>/dev/null | head -1)" ]; then
   echo "Building harness-server..."
   cargo build --manifest-path "$ROOT/Cargo.toml" --bin harness-server 2>&1
+fi
+
+# Load .env from the project root so the server inherits API keys etc.
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ROOT/.env"
+  set +a
 fi
 
 # Run the TUI
