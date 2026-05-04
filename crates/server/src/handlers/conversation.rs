@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::rpc::methods::conversation::{
     CreateParams, CreateResult, GetParams, GetResult, ListParams, ListResult,
-    ConversationSummary, MessageEntry, SwitchParams, SwitchResult, SendParams,
-    SendResult, ToolCallInfo,
+    ConversationSummary, MessageEntry, SetModelParams, SetModelResult,
+    SwitchParams, SwitchResult, SendParams, SendResult, ToolCallInfo,
 };
 use crate::ServerState;
 use agent::conversation::{self, summarize, Conversation};
@@ -136,6 +136,30 @@ pub fn get(params: GetParams) -> Result<GetResult, String> {
         id: conv.id,
         title: conv.title,
         messages,
+    })
+}
+
+/// Handle `conversation.setModel` — update the model used by an existing
+/// conversation. Empty string clears the per-conversation override and lets
+/// the next send fall back to the global `settings.model`.
+pub fn set_model(params: SetModelParams) -> Result<SetModelResult, String> {
+    let store = store()?;
+    let mut conv = conversation::load(&store, &params.id)
+        .map_err(|e| format!("failed to load conversation: {e}"))?;
+
+    conv.model = if params.model.trim().is_empty() {
+        None
+    } else {
+        Some(params.model.trim().to_string())
+    };
+
+    store
+        .save_metadata(&conv.id, &conv.metadata())
+        .map_err(|e| format!("failed to save metadata: {e}"))?;
+
+    Ok(SetModelResult {
+        id: conv.id,
+        model: conv.model,
     })
 }
 

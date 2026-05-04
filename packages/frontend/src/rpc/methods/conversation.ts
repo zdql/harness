@@ -59,3 +59,13 @@ export interface ToolCallInfo {
   arguments: string;
   result: string;
 }
+
+export interface SetModelParams {
+  id: string;
+  model: string;
+}
+
+export interface SetModelResult {
+  id: string;
+  model: string | null;
+}

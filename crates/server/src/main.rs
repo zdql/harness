@@ -134,6 +134,9 @@ async fn dispatch(req: Request, state: &Arc<ServerState>, stdout: &SharedStdout)
         conversation::Get::NAME => {
             handle::<conversation::Get, _>(req, handlers::conversation::get)
         }
+        conversation::SetModel::NAME => {
+            handle::<conversation::SetModel, _>(req, handlers::conversation::set_model)
+        }
         conversation::Send::NAME => handle_send(req, state, stdout).await,
 
         // -- HUD ------------------------------------------------------------
@@ -141,6 +144,7 @@ async fn dispatch(req: Request, state: &Arc<ServerState>, stdout: &SharedStdout)
         hud::CurrentGitBranchGet::NAME => handle::<hud::CurrentGitBranchGet, _>(req, handlers::hud::current_git_branch_get),
         hud::DiffCountsGet::NAME => handle::<hud::DiffCountsGet, _>(req, handlers::hud::diff_counts_get),
         hud::ContextTokensGet::NAME => handle::<hud::ContextTokensGet, _>(req, handlers::hud::context_tokens_get),
+        hud::CurrentModelGet::NAME => handle::<hud::CurrentModelGet, _>(req, handlers::hud::current_model_get),
 
         // -- Unknown --------------------------------------------------------
         _ => Response::error(

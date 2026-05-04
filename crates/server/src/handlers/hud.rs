@@ -6,11 +6,12 @@
 use crate::rpc::methods::hud::{
     ContextTokensGetParams, ContextTokensGetResult,
     CurrentGitBranchGetParams, CurrentGitBranchGetResult,
+    CurrentModelGetParams, CurrentModelGetResult,
     DiffCountsGetParams, DiffCountsGetResult,
 };
 use agent::conversation;
 use agent::llm::{AssistantContent, ChatCompletionMessage, StringOrTextParts, UserContent};
-use agent::prompts::CHARS_PER_TOKEN;
+use agent::prompts::{CHARS_PER_TOKEN, DEFAULT_MODEL};
 use std::process::Command;
 use storage::fs::FsStore;
 
@@ -103,4 +104,26 @@ fn parts_chars(content: &StringOrTextParts) -> usize {
         StringOrTextParts::String(s) => s.len(),
         _ => 0,
     }
+}
+
+/// Handle `hud.currentModel.get` — returns the model the active conversation
+/// will use on its next send. Resolution order matches the agent loop:
+/// per-conversation override → global `settings.model` → built-in default.
+pub fn current_model_get(_: CurrentModelGetParams) -> Result<CurrentModelGetResult, String> {
+    let settings = storage::settings::read();
+
+    if let Some(conv_id) = settings.conversation.as_deref() {
+        if let Ok(store) = FsStore::new() {
+            if let Ok(conv) = conversation::load(&store, conv_id) {
+                if let Some(model) = conv.model {
+                    return Ok(CurrentModelGetResult { model });
+                }
+            }
+        }
+    }
+
+    let model = settings
+        .model
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    Ok(CurrentModelGetResult { model })
 }
