@@ -17,6 +17,8 @@ export interface ListResult {
 export interface ConversationSummary {
   id: string;
   title?: string;
+  updated_at: number;
+  subagent_count: number;
 }
 
 export interface SwitchParams {

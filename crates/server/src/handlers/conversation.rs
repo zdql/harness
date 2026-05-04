@@ -59,7 +59,14 @@ pub fn list(_params: ListParams) -> Result<ListResult, String> {
         }
 
         let title = meta["title"].as_str().map(String::from);
-        conversations.push(ConversationSummary { id, title });
+        let updated_at = meta["updated_at"].as_i64().unwrap_or(0);
+        let subagent_count = count_subagents(&id);
+        conversations.push(ConversationSummary {
+            id,
+            title,
+            updated_at,
+            subagent_count,
+        });
     }
 
     Ok(ListResult { conversations })
@@ -392,6 +399,30 @@ fn conv_dir_for(conv_id: &str) -> std::path::PathBuf {
         .join(".agent-harness")
         .join("conversations")
         .join(conv_id)
+}
+
+/// Recursively count all `.json` files under the subagent directory for a conversation.
+fn count_subagents(conv_id: &str) -> usize {
+    let root = subagent_root_for(conv_id);
+    if !root.is_dir() {
+        return 0;
+    }
+
+    let mut count = 0;
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
 }
 
 fn uuid() -> String {

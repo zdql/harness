@@ -34,6 +34,8 @@ const MODEL_ALIASES: Record<string, string> = {
   sonnet: "anthropic/claude-sonnet-4-5",
   haiku: "anthropic/claude-haiku-4-5",
   // OpenAI
+  "gpt-5.5": "openai/gpt-5.5",
+  "gpt55": "openai/gpt-5.5",
   "gpt-5": "openai/gpt-5",
   "gpt5": "openai/gpt-5",
   mini: "openai/gpt-5-mini",
@@ -51,12 +53,31 @@ const MODEL_ALIASES: Record<string, string> = {
   "deepseek-v4": "deepseek/deepseek-v4-pro",
   "deepseek-pro": "deepseek/deepseek-v4-pro",
   v4: "deepseek/deepseek-v4-pro",
+  "deepseek-flash": "deepseek/deepseek-v4-flash",
+  "v4-flash": "deepseek/deepseek-v4-flash",
   "deepseek-r1": "deepseek/deepseek-r1",
   r1: "deepseek/deepseek-r1",
   // Moonshot
   kimi: "moonshotai/kimi-k2.6",
   "kimi-k2": "moonshotai/kimi-k2.6",
   k2: "moonshotai/kimi-k2.6",
+  // Tencent
+  hy3: "tencent/hy3-preview:free",
+  "hy3-preview": "tencent/hy3-preview:free",
+  hunyuan: "tencent/hy3-preview:free",
+  // Z.ai
+  glm: "z-ai/glm-5.1",
+  "glm-5.1": "z-ai/glm-5.1",
+  // InclusionAI
+  ling: "inclusionai/ling-2.6-1t:free",
+  "ling-1t": "inclusionai/ling-2.6-1t:free",
+  // MiniMax
+  minimax: "minimax/minimax-m2.7",
+  m2: "minimax/minimax-m2.7",
+  "m2.7": "minimax/minimax-m2.7",
+  // StepFun
+  step: "stepfun/step-3.5-flash",
+  "step-flash": "stepfun/step-3.5-flash",
   // xAI
   grok: "x-ai/grok-4-fast",
   // Qwen
@@ -109,6 +130,13 @@ export const slashCommands: SlashCommand[] = [
     description: "Open the settings editor (model, reasoning effort, …)",
     run: () => {
       overlayStore.set("settings");
+    },
+  },
+  {
+    name: "conversations",
+    description: "List and switch between past conversations",
+    run: () => {
+      overlayStore.set("conversations");
     },
   },
   {

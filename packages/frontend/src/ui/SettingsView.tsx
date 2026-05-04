@@ -31,11 +31,16 @@ import { historyStore } from "../state/historyStore.ts";
 // treats as `None`.
 const UNSET = "(default)";
 
+// Preset model slugs offered in the cycler. Order roughly mirrors the
+// OpenRouter usage leaderboard so the popular models surface first when the
+// user starts cycling. Custom slugs typed into the settings file still work.
+
 const MODEL_PRESETS = [
   UNSET,
   "anthropic/claude-opus-4-6",
   "anthropic/claude-sonnet-4-5",
   "anthropic/claude-haiku-4-5",
+  "openai/gpt-5.5",
   "openai/gpt-5",
   "openai/gpt-5-mini",
   "openai/gpt-5-nano",
@@ -45,10 +50,16 @@ const MODEL_PRESETS = [
   "openai/o3-mini",
   "google/gemini-2.5-pro",
   "google/gemini-2.5-flash",
+  "tencent/hy3-preview:free",
+  "moonshotai/kimi-k2.6",
   "deepseek/deepseek-v4-pro",
+  "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-chat-v3.1",
   "deepseek/deepseek-r1",
-  "moonshotai/kimi-k2.6",
+  "z-ai/glm-5.1",
+  "inclusionai/ling-2.6-1t:free",
+  "minimax/minimax-m2.7",
+  "stepfun/step-3.5-flash",
   "x-ai/grok-4-fast",
   "qwen/qwen3-coder",
   "meta-llama/llama-3.3-70b-instruct",
