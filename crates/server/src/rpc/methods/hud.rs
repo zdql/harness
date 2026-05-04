@@ -64,3 +64,25 @@ impl RpcMethod for ContextTokensGet {
     type Params = ContextTokensGetParams;
     type Result = ContextTokensGetResult;
 }
+
+// ===========================================================================
+// hud.currentModel.get — model id the active conversation will use on its
+// next send. Falls back to the global settings model, then the built-in
+// default if neither is set.
+// ===========================================================================
+
+#[derive(serde::Deserialize)]
+pub struct CurrentModelGetParams {}
+
+#[derive(serde::Serialize)]
+pub struct CurrentModelGetResult {
+    pub model: String,
+}
+
+pub struct CurrentModelGet;
+
+impl RpcMethod for CurrentModelGet {
+    const NAME: &'static str = "hud.currentModel.get";
+    type Params = CurrentModelGetParams;
+    type Result = CurrentModelGetResult;
+}

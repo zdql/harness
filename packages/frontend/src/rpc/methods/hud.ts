@@ -16,3 +16,9 @@ export interface ContextTokensGetParams {}
 export interface ContextTokensGetResult {
   tokens: number;
 }
+
+export interface CurrentModelGetParams {}
+
+export interface CurrentModelGetResult {
+  model: string;
+}

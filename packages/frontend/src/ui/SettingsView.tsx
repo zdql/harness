@@ -36,10 +36,22 @@ const MODEL_PRESETS = [
   "anthropic/claude-opus-4-6",
   "anthropic/claude-sonnet-4-5",
   "anthropic/claude-haiku-4-5",
+  "openai/gpt-5",
+  "openai/gpt-5-mini",
+  "openai/gpt-5-nano",
   "openai/gpt-4o",
-  "openai/o1",
+  "openai/gpt-4o-mini",
+  "openai/o3",
   "openai/o3-mini",
   "google/gemini-2.5-pro",
+  "google/gemini-2.5-flash",
+  "deepseek/deepseek-v4-pro",
+  "deepseek/deepseek-chat-v3.1",
+  "deepseek/deepseek-r1",
+  "moonshotai/kimi-k2.6",
+  "x-ai/grok-4-fast",
+  "qwen/qwen3-coder",
+  "meta-llama/llama-3.3-70b-instruct",
 ];
 
 const REASONING_EFFORT_OPTIONS = [
@@ -125,13 +137,28 @@ export function SettingsView({ rpc }: Props): React.JSX.Element {
       setStatus(`save failed: ${res.error.message}`);
       return;
     }
+
+    // Also push the new model onto the active conversation so it takes
+    // effect on the next send instead of waiting for /clear. Empty string
+    // clears the per-conversation override so the global default kicks in.
+    const activeId = res.value.conversation;
+    if (activeId) {
+      const convRes = await rpc.call("conversation.setModel", {
+        id: activeId,
+        model: toEmpty(values.model),
+      });
+      if (!convRes.ok) {
+        setStatus(`save failed: ${convRes.error.message}`);
+        return;
+      }
+    }
+
     historyStore.addItem({
       type: "info",
       text:
         `Settings saved. Model=${res.value.model ?? "(default)"}, ` +
         `reasoning_effort=${res.value.reasoning_effort ?? "(default)"}, ` +
-        `reasoning_summary=${res.value.reasoning_summary ?? "(default)"}. ` +
-        `Run /clear to start a new conversation with the new model.`,
+        `reasoning_summary=${res.value.reasoning_summary ?? "(default)"}.`,
     });
     close();
   };

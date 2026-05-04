@@ -52,6 +52,10 @@ export interface MethodRegistry {
     params: Conversation.GetParams;
     result: Conversation.GetResult;
   };
+  "conversation.setModel": {
+    params: Conversation.SetModelParams;
+    result: Conversation.SetModelResult;
+  };
   "conversation.send": {
     params: Conversation.SendParams;
     result: Conversation.SendResult;
@@ -69,6 +73,10 @@ export interface MethodRegistry {
   "hud.contextTokens.get": {
     params: Hud.ContextTokensGetParams;
     result: Hud.ContextTokensGetResult;
+  };
+  "hud.currentModel.get": {
+    params: Hud.CurrentModelGetParams;
+    result: Hud.CurrentModelGetResult;
   };
 }
 

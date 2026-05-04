@@ -6,6 +6,7 @@
 import { Box, Text } from "ink";
 import { GithubDisplay } from "./GithubDisplay.tsx";
 import { ContextDisplay } from "./ContextDisplay.tsx";
+import { ModelDisplay } from "./ModelDisplay.tsx";
 import type { RpcClient } from "../../rpc/client.ts";
 
 interface Props {
@@ -20,6 +21,10 @@ export function HeadsUpDisplay({ rpc }: Props): React.JSX.Element {
         {"  │  "}
       </Text>
       <ContextDisplay rpc={rpc} />
+      <Text color="gray" dimColor>
+        {"  │  "}
+      </Text>
+      <ModelDisplay rpc={rpc} />
     </Box>
   );
 }

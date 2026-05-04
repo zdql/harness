@@ -142,3 +142,31 @@ pub struct ToolCallInfo {
     pub arguments: String,
     pub result: String,
 }
+
+// ===========================================================================
+// conversation.setModel
+// ===========================================================================
+
+pub struct SetModel;
+
+impl RpcMethod for SetModel {
+    const NAME: &'static str = "conversation.setModel";
+    type Params = SetModelParams;
+    type Result = SetModelResult;
+}
+
+#[derive(serde::Deserialize)]
+pub struct SetModelParams {
+    /// Conversation to update.
+    pub id: String,
+    /// New model id (e.g. `"deepseek/deepseek-chat-v3.1"`). Empty string
+    /// clears the per-conversation override and falls back to the global
+    /// settings default on the next send.
+    pub model: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct SetModelResult {
+    pub id: String,
+    pub model: Option<String>,
+}
