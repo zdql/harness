@@ -14,7 +14,7 @@
 
 It dawned on me recently that it would be advantageous to have an intimiate understanding of how a modern "Agent" works. As the singularity approaches, I might find some respite in the fact that I have read at least most of the implementation that my personal singularity runs on.
 
-The rest of this readme is AI slop. I spend the occasional weekend on this project and, as I improve it, find myself using it for actual programming work more and more often. I attempt to reimplement from first principles any feature i find particularly interesting that Codex or Claude Code use. Most are fairly trivial to figure out, others more complex (like sub-agents). My long term vision is that this architecture supports sub-agents speaking with one another as they work. Currently, sub-agents vaguely work, to be clear. 
+I spend the occasional weekend on this project and, as I improve it, find myself using it for actual programming work more and more often. I attempt to reimplement from first principles any feature i find particularly interesting that Codex or Claude Code use. Most are fairly trivial to figure out, others more complex (like sub-agents). My long term vision is that this architecture supports sub-agents speaking with one another as they work. Currently, sub-agents vaguely work, to be clear. 
 
 The rest of this is fairly accurate AI slop. Feel free to read to understand your way around the repository.
 
