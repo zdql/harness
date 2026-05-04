@@ -156,12 +156,6 @@ Harness supports spawning parallel child agents via the `start_subagent` tool. T
 
 5. **Registry** — A process-wide `SubagentRegistry` tracks running subagents, recording the spawn tree for observability.
 
-### Benefits
-
-- **Parallelism** — Multiple subtasks execute concurrently instead of sequentially
-- **Isolation** — Each subagent has its own conversation scope and context budget
-- **Persistence** — Subagent conversations are saved to disk for later inspection
-
 ## 📄 License
 
 MIT
