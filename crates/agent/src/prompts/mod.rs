@@ -6,6 +6,9 @@
 // be inserted into a tool result or system message.
 // ---------------------------------------------------------------------------
 
+mod dir_snapshot;
+pub use dir_snapshot::build_dir_snapshot;
+
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
@@ -24,6 +27,13 @@ pub fn build_system_prompt(scratch_dir: Option<&std::path::Path>) -> String {
              tool calls are resolved from here.",
             cwd.display()
         ));
+
+        // Append a lightweight snapshot of the cwd contents so the model
+        // has an initial lay-of-the-land without needing a tool call.
+        if let Some(snapshot) = build_dir_snapshot(&cwd) {
+            s.push_str("\n\n");
+            s.push_str(&snapshot);
+        }
     }
 
     if let Some(dir) = scratch_dir {
