@@ -106,10 +106,7 @@ impl Conversation {
 use storage::ConversationStore;
 
 /// Save a conversation: overwrite metadata, append only the *last* message.
-pub fn save<S: ConversationStore>(
-    store: &S,
-    conv: &Conversation,
-) -> Result<(), S::Error> {
+pub fn save<S: ConversationStore>(store: &S, conv: &Conversation) -> Result<(), S::Error> {
     store.save_metadata(&conv.id, &conv.metadata())?;
     if let Some(last) = conv.messages.last() {
         let val = serde_json::to_value(last).expect("message serializes");
@@ -123,10 +120,7 @@ pub fn save<S: ConversationStore>(
 /// If compactions have occurred, only messages from the most recent compaction
 /// boundary onward are loaded into `messages`. The full history remains on
 /// disk in the .jsonl file, untouched.
-pub fn load<S: ConversationStore>(
-    store: &S,
-    id: &str,
-) -> Result<Conversation, S::Error> {
+pub fn load<S: ConversationStore>(store: &S, id: &str) -> Result<Conversation, S::Error> {
     let meta = store.load_metadata(id)?;
     let raw_msgs = store.load_messages(id)?;
 
@@ -156,7 +150,8 @@ pub fn load<S: ConversationStore>(
         id: meta["id"].as_str().unwrap_or(id).to_string(),
         model: meta["model"].as_str().map(String::from),
         title: meta["title"].as_str().map(String::from),
-        title_set_at_message_count: meta["title_set_at_message_count"].as_u64().unwrap_or(0) as usize,
+        title_set_at_message_count: meta["title_set_at_message_count"].as_u64().unwrap_or(0)
+            as usize,
         created_at: meta["created_at"].as_i64().unwrap_or(0),
         updated_at: meta["updated_at"].as_i64().unwrap_or(0),
         messages,
@@ -166,9 +161,7 @@ pub fn load<S: ConversationStore>(
 }
 
 /// Load the most recent conversation, or None if nothing is stored.
-pub fn load_latest<S: ConversationStore>(
-    store: &S,
-) -> Result<Option<Conversation>, S::Error> {
+pub fn load_latest<S: ConversationStore>(store: &S) -> Result<Option<Conversation>, S::Error> {
     let ids = store.list()?;
     match ids.first() {
         Some(id) => Ok(Some(load(store, id)?)),

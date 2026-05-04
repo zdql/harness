@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use super::common::{
-    AudioParam, CacheControl, DebugOptions, ImageConfig, Modality, PredictionContent, Plugin,
+    AudioParam, CacheControl, DebugOptions, ImageConfig, Modality, Plugin, PredictionContent,
     ProviderRouting, Reasoning, ResponseFormat, ServiceTier, Stop, StreamOptions, Trace,
     WebSearchOptions,
 };
@@ -117,7 +117,6 @@ pub struct CreateChatCompletionRequest {
     // -------------------------------------------------------------------
     // OpenRouter-specific fields
     // -------------------------------------------------------------------
-
     /// Provider routing preferences.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<ProviderRouting>,

@@ -2,12 +2,10 @@
 // handlers::hud — Heads Up Display read handlers
 // ---------------------------------------------------------------------------
 
-
 use crate::rpc::methods::hud::{
-    ContextTokensGetParams, ContextTokensGetResult,
-    CurrentGitBranchGetParams, CurrentGitBranchGetResult,
-    CurrentModelGetParams, CurrentModelGetResult,
-    DiffCountsGetParams, DiffCountsGetResult,
+    ContextTokensGetParams, ContextTokensGetResult, CurrentGitBranchGetParams,
+    CurrentGitBranchGetResult, CurrentModelGetParams, CurrentModelGetResult, DiffCountsGetParams,
+    DiffCountsGetResult,
 };
 use agent::conversation;
 use agent::llm::{AssistantContent, ChatCompletionMessage, StringOrTextParts, UserContent};
@@ -21,10 +19,13 @@ fn get_current_branch() -> Result<String, String> {
         .arg("--show-current")
         .output()
         .map_err(|e| format!("failed to get current branch: {e}"))?;
-    Ok(String::from_utf8(output.stdout).map_err(|e| format!("failed to get current branch: {e}"))?)
+    Ok(String::from_utf8(output.stdout)
+        .map_err(|e| format!("failed to get current branch: {e}"))?)
 }
 /// Handle `hud.currentGitBranch.get`.
-pub fn current_git_branch_get(_: CurrentGitBranchGetParams) -> Result<CurrentGitBranchGetResult, String> {
+pub fn current_git_branch_get(
+    _: CurrentGitBranchGetParams,
+) -> Result<CurrentGitBranchGetResult, String> {
     let branch = get_current_branch()?;
     Ok(CurrentGitBranchGetResult { branch })
 }
@@ -37,7 +38,10 @@ pub fn diff_counts_get(_: DiffCountsGetParams) -> Result<DiffCountsGetResult, St
         .map_err(|e| format!("failed to run git diff: {e}"))?;
 
     if !output.status.success() {
-        return Ok(DiffCountsGetResult { added: 0, removed: 0 });
+        return Ok(DiffCountsGetResult {
+            added: 0,
+            removed: 0,
+        });
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -122,8 +126,6 @@ pub fn current_model_get(_: CurrentModelGetParams) -> Result<CurrentModelGetResu
         }
     }
 
-    let model = settings
-        .model
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let model = settings.model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
     Ok(CurrentModelGetResult { model })
 }

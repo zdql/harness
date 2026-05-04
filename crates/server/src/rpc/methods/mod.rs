@@ -11,10 +11,10 @@
 // ---------------------------------------------------------------------------
 
 pub mod conversation;
-pub mod settings;
 pub mod hud;
+pub mod settings;
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 /// Trait that every RPC method implements. This is the single source of truth
 /// for what a method is called and what types it moves across the wire.

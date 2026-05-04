@@ -32,7 +32,11 @@ pub fn update(params: UpdateParams) -> Result<UpdateResult, String> {
         };
     }
     if let Some(effort) = params.reasoning_effort {
-        s.reasoning_effort = if effort.is_empty() { None } else { Some(effort) };
+        s.reasoning_effort = if effort.is_empty() {
+            None
+        } else {
+            Some(effort)
+        };
     }
     if let Some(summary) = params.reasoning_summary {
         s.reasoning_summary = if summary.is_empty() {

@@ -175,7 +175,9 @@ impl StreamAccumulator {
         }
         if let Some(details) = &delta.reasoning_details {
             for frag in details {
-                let Some(obj) = frag.as_object() else { continue };
+                let Some(obj) = frag.as_object() else {
+                    continue;
+                };
                 // Group by `index`. If missing, append as its own block.
                 let idx = obj
                     .get("index")

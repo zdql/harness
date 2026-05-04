@@ -1,7 +1,7 @@
 use std::pin::Pin;
 
 use futures_util::{Stream, StreamExt};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
 use super::request::CreateChatCompletionRequest;
 use super::response::ChatCompletion;
@@ -211,7 +211,7 @@ impl ChatClient {
                                 match serde_json::from_str::<ChatCompletionChunk>(data) {
                                     Ok(chunk) => return Some((Ok(chunk), (stream, buffer))),
                                     Err(e) => {
-                                        return Some((Err(ChatError::from(e)), (stream, buffer)))
+                                        return Some((Err(ChatError::from(e)), (stream, buffer)));
                                     }
                                 }
                             }
@@ -240,16 +240,13 @@ impl ChatClient {
                                     }
                                     match serde_json::from_str::<ChatCompletionChunk>(data) {
                                         Ok(chunk) => {
-                                            return Some((
-                                                Ok(chunk),
-                                                (stream, String::new()),
-                                            ))
+                                            return Some((Ok(chunk), (stream, String::new())));
                                         }
                                         Err(e) => {
                                             return Some((
                                                 Err(ChatError::from(e)),
                                                 (stream, String::new()),
-                                            ))
+                                            ));
                                         }
                                     }
                                 }
