@@ -92,16 +92,6 @@ ln -s "$(pwd)/bin/harness" ~/.local/bin/harness
 | `/help` | See available commands | 
 
 
-### Settings & History
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Move selection down |
-| `k` / `↑` | Move selection up |
-| `Enter` / `e` | Edit field / open conversation |
-| `d` | Delete conversation (history) |
-| `Escape` / `b` / `q` | Go back |
-
 ## 🛠️ Built-in Tools
 
 | Tool | Description |
