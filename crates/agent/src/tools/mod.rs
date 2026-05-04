@@ -1,5 +1,6 @@
 mod addition;
 mod bash;
+mod edit;
 mod glob_tool;
 mod grep;
 pub mod handler;
@@ -9,6 +10,7 @@ mod write;
 
 pub use addition::AdditionTool;
 pub use bash::BashTool;
+pub use edit::EditTool;
 pub use glob_tool::GlobTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
