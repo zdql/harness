@@ -211,6 +211,16 @@ async function main(): Promise<void> {
     { exitOnCtrlC: false },
   );
 
+  // 5. If the server dies, surface a fatal error and unmount the TUI
+  //    so we don't hang in raw mode with no way out.
+  rpc.onDisconnect((reason) => {
+    historyStore.addItem({
+      type: "error",
+      message: `harness-server disconnected: ${reason}. Exiting.`,
+    });
+    setTimeout(() => instance.unmount(), 200);
+  });
+
   await instance.waitUntilExit();
   rpc.close();
 }

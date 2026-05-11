@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------------
 
 mod handlers;
+mod memory_logger;
 mod rpc;
 
 use std::sync::Arc;
@@ -42,6 +43,10 @@ type SharedStdout = Arc<Mutex<tokio::io::Stdout>>;
 
 #[tokio::main]
 async fn main() {
+    // Memory instrumentation (no-op unless HARNESS_MEMORY_LOG=1). Started
+    // before .env so the env var must come from the parent process.
+    memory_logger::maybe_start();
+
     // Load API key from environment (supports .env via manual read)
     load_dotenv();
     let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_else(|_| {
