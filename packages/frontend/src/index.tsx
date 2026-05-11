@@ -12,6 +12,7 @@ import { historyStore, type HistoryItemInput } from "./state/historyStore.ts";
 import { RpcClient } from "./rpc/client.ts";
 import { App } from "./ui/App.tsx";
 import { dispatchSlashCommand } from "./commands/slashCommands.ts";
+import { startMemoryLogger } from "./memoryLogger.ts";
 
 async function main(): Promise<void> {
   // 1. Probe terminal capabilities (Kitty / modifyOtherKeys / bg color).
@@ -21,6 +22,10 @@ async function main(): Promise<void> {
 
   // 2. Spawn the Rust server + create a conversation to talk to.
   const rpc = new RpcClient();
+
+  if (process.env["HARNESS_MEMORY_LOG"] === "1") {
+    void startMemoryLogger(rpc);
+  }
 
   const createRes = await rpc.call("conversation.create", {});
   if (!createRes.ok) {
@@ -55,7 +60,7 @@ async function main(): Promise<void> {
     | { kind: "reasoning_delta"; text: string }
     | { kind: "content_delta"; text: string }
     | { kind: "tool_call_start"; name: string; arguments: string }
-    | { kind: "tool_call_end"; name: string; result: string }
+    | { kind: "tool_call_end"; name: string; arguments: string; result: string }
     | { kind: "subagent_started"; subagent_id: string; task: string }
     | {
         kind: "subagent_completed";
@@ -97,13 +102,14 @@ async function main(): Promise<void> {
       case "content_delta":
         break;
       case "tool_call_start":
-        spinner = { type: "tool-running", name: ev.name };
+        spinner = { type: "tool-running", name: ev.name, arguments: ev.arguments };
         pushPending();
         break;
       case "tool_call_end":
         completed.push({
           type: "tool",
           name: ev.name,
+          arguments: ev.arguments,
           result: ev.result,
         });
         reasoningBuf = "";
@@ -116,6 +122,7 @@ async function main(): Promise<void> {
         completed.push({
           type: "tool",
           name: "start_subagent",
+          arguments: JSON.stringify({ task: ev.task }),
           result: `started ${ev.subagent_id}: ${ev.task.slice(0, 80)}`,
         });
         pushPending();
@@ -176,23 +183,19 @@ async function main(): Promise<void> {
       return;
     }
 
+    // Commit whatever tools accumulated during this turn before we either
+    // hand off to subagents or finish. Otherwise the suspended branch
+    // would discard the parent turn's tool history.
+    historyStore.setPending(completed);
+    historyStore.commitPending();
+    completed = [];
+
     if (res.value.suspended) {
-      // Subagents still running — keep the event listener active and show
-      // a waiting spinner. The continuation_done event will finalize.
       suspended = true;
-      completed = [];
-      spinner = {
-        type: "thinking",
-        label: "Waiting for subagents…",
-      };
+      spinner = { type: "thinking", label: "Waiting for subagents…" };
       pushPending();
-    } else {
-      // Fully done — commit tool items and clear pending.
-      historyStore.setPending(completed);
-      historyStore.commitPending();
-      completed = [];
     }
-    
+
     historyStore.addItem({ type: "assistant", text: res.value.reply });
   }
 

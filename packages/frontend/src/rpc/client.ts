@@ -35,6 +35,8 @@ export class RpcClient {
   private notificationHandler:
     | ((method: string, params: unknown) => void)
     | null = null;
+  private disconnectHandler: ((reason: string) => void) | null = null;
+  private disconnected = false;
 
   constructor(opts: RpcClientOptions = {}) {
     const bin =
@@ -110,6 +112,21 @@ export class RpcClient {
     handler: ((method: string, params: unknown) => void) | null,
   ): void {
     this.notificationHandler = handler;
+  }
+
+  /**
+   * Register a handler for unexpected server disconnect (stdout EOF or
+   * read error). Called exactly once. If a disconnect has already
+   * happened, the handler is invoked synchronously.
+   */
+  onDisconnect(handler: (reason: string) => void): void {
+    this.disconnectHandler = handler;
+    if (this.disconnected) handler("server already disconnected");
+  }
+
+  /** PID of the spawned harness-server subprocess (for monitoring). */
+  get serverPid(): number | undefined {
+    return this.process.pid;
   }
 
   /** Gracefully shut down the server process. */
