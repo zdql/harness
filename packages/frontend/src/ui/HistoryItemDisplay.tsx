@@ -9,6 +9,7 @@
 import { Box, Text } from "ink";
 import { useEffect, useState } from "react";
 import type { HistoryItem } from "./types.ts";
+import { toolDescription } from "./toolDescription.ts";
 
 interface Props {
   item: HistoryItem;
@@ -50,32 +51,23 @@ export function HistoryItemDisplay({ item }: Props): React.JSX.Element {
         </Box>
       );
 
-    case "tool": {
-      const MAX_PREVIEW_CHARS = 120;
-      // Collapse newlines so a multi-line result renders as a single line,
-      // then hard-cap by character count to keep long one-liners (JSON
-      // blobs, file dumps) from blowing up the scrollback.
-      const oneLine = item.result.replace(/\s+/g, " ").trim();
-      const preview = oneLine.slice(0, MAX_PREVIEW_CHARS);
-      const truncated = oneLine.length > MAX_PREVIEW_CHARS;
+    case "tool":
       return (
         <Box flexDirection="column" marginTop={1} marginLeft={2}>
           <Text color="magenta" bold>
-            ⚙ {item.name}
+            ⚙ {toolDescription(item.name, item.arguments)}
           </Text>
           <Text color="gray">
-            {preview}
-            {truncated ? "…" : ""}
+            {item.result}
           </Text>
         </Box>
       );
-    }
 
     case "tool-running":
       return (
         <Box flexDirection="column" marginTop={1} marginLeft={2}>
           <Text color="magenta" bold>
-            <Spinner /> <Text color="magenta">⚙ {item.name}</Text>
+            <Spinner /> <Text color="magenta">⚙ {toolDescription(item.name, item.arguments)}</Text>
             <Text color="gray"> (running…)</Text>
           </Text>
         </Box>
@@ -107,5 +99,7 @@ export function HistoryItemDisplay({ item }: Props): React.JSX.Element {
           </Text>
         </Box>
       );
+    case "evicted":
+      return <></>;
   }
 }

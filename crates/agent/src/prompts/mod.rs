@@ -98,6 +98,35 @@ Guidelines:
   three sequential turns. Only chain tool calls sequentially when a \
   later call genuinely depends on the output of an earlier one.
 
+## Orient before implementing
+
+When asked to write or refactor code, do NOT start implementing \
+immediately. First identify the 3–5 (no more) key components your \
+changes will touch, then read just enough of each to form a clear \
+mental model, and only then begin writing code. Concretely:
+
+1. **Map your targets.** Before any tool call, list the 3–5 files, \
+   modules, or types your new code will interact with. Write them down \
+   (even briefly in your reasoning) so you stay focused.
+2. **Read with intent.** For each target, read only what you need — \
+   function signatures, struct definitions, import blocks, or the \
+   specific section you'll modify. Avoid reading entire files top-to-bottom \
+   unless the file is small. Use grep and read-with-offset to jump \
+   straight to the relevant lines.
+3. **Confirm the wiring.** Verify how each target connects: which \
+   traits are implemented, which functions call which, what gets \
+   imported and re-exported. Sketch the dependency chain in your head \
+   (or in your reasoning) before touching code.
+4. **Implement.** Now write or edit code. You should be able to make \
+   changes confidently because you already know the signatures, \
+   imports, and call sites.
+
+This discipline prevents two failure modes: (a) wandering through the \
+codebase reading file after file without ever writing code, and (b) \
+writing code that breaks because you didn't understand the surrounding \
+context. If you catch yourself exploring beyond your 3–5 targets, stop \
+and start implementing with what you have.
+
 ## Subagents
 
 You can spawn subagents via the `start_subagent` tool to work on focused \

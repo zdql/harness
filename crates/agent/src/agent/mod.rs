@@ -144,6 +144,7 @@ async fn run_loop<S: ConversationStore>(
                 events,
                 AgentEvent::ToolCallEnd {
                     name: call.function.name.clone(),
+                    arguments: call.function.arguments.clone(),
                     result: result.clone(),
                 },
             );

@@ -18,7 +18,7 @@ pub enum AgentEvent {
     /// A tool is about to execute.
     ToolCallStart { name: String, arguments: String },
     /// A tool finished executing.
-    ToolCallEnd { name: String, result: String },
+    ToolCallEnd { name: String, arguments: String, result: String },
     /// A subagent has been spawned from this agent's `start_subagent` tool.
     SubagentStarted { subagent_id: String, task: String },
     /// A subagent spawned from this agent has finished.

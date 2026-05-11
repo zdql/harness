@@ -20,6 +20,21 @@ done
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 SERVER_BIN="$ROOT/target/debug/harness-server"
 
+# Parse flags
+PASS_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --memory)
+      export HARNESS_MEMORY_LOG=1
+      echo "Memory logging enabled → ~/.homebrewagent/memory.log"
+      echo "  tail -f ~/.homebrewagent/memory.log   (from another terminal)"
+      ;;
+    *)
+      PASS_ARGS+=("$arg")
+      ;;
+  esac
+done
+
 # Build the Rust server if missing or outdated
 if [ ! -f "$SERVER_BIN" ] || [ -n "$(find "$ROOT/crates" -name '*.rs' -newer "$SERVER_BIN" 2>/dev/null | head -1)" ]; then
   echo "Building harness-server..."
@@ -35,4 +50,4 @@ if [ -f "$ROOT/.env" ]; then
 fi
 
 # Run the TUI
-exec bun run "$ROOT/packages/frontend/src/index.tsx"
+exec bun run "$ROOT/packages/frontend/src/index.tsx" ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}

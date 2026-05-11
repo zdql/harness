@@ -35,6 +35,8 @@ export class RpcClient {
   private notificationHandler:
     | ((method: string, params: unknown) => void)
     | null = null;
+  private disconnectHandler: ((reason: string) => void) | null = null;
+  private disconnected = false;
 
   constructor(opts: RpcClientOptions = {}) {
     const bin =
@@ -112,6 +114,21 @@ export class RpcClient {
     this.notificationHandler = handler;
   }
 
+  /**
+   * Register a handler for unexpected server disconnect (stdout EOF or
+   * read error). Called exactly once. If a disconnect has already
+   * happened, the handler is invoked synchronously.
+   */
+  onDisconnect(handler: (reason: string) => void): void {
+    this.disconnectHandler = handler;
+    if (this.disconnected) handler("server already disconnected");
+  }
+
+  /** PID of the spawned harness-server subprocess (for monitoring). */
+  get serverPid(): number | undefined {
+    return this.process.pid;
+  }
+
   /** Gracefully shut down the server process. */
   close(): void {
     try {
@@ -126,11 +143,15 @@ export class RpcClient {
 
   private async readLoop(): Promise<void> {
     const stdout = this.process.stdout;
-    if (!stdout) return;
+    if (!stdout) {
+      this.handleDisconnect("server has no stdout");
+      return;
+    }
 
     const reader = (stdout as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
 
+    let reason = "server stdout closed";
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -176,8 +197,28 @@ export class RpcClient {
           }
         }
       }
-    } catch {
-      // Stream ended
+    } catch (e) {
+      reason = `server stdout read error: ${e}`;
     }
+
+    this.handleDisconnect(reason);
+  }
+
+  /**
+   * Fail any in-flight calls with a clear error and notify the disconnect
+   * handler exactly once. Called when the server's stdout closes — which
+   * means either the server exited (crash, OOM-kill, clean shutdown) or
+   * its stdout was severed.
+   */
+  private handleDisconnect(reason: string): void {
+    if (this.disconnected) return;
+    this.disconnected = true;
+
+    for (const [id, settle] of this.pending) {
+      settle(err({ code: -32000, message: `server disconnected: ${reason}` }));
+      this.pending.delete(id);
+    }
+
+    this.disconnectHandler?.(reason);
   }
 }
