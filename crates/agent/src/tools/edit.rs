@@ -84,9 +84,8 @@ impl Tool for EditTool {
 
         run_blocking(move || {
             let path = Path::new(&args.file_path);
-            let original =
-                fs::read_to_string(path)
-                    .map_err(|e| ToolError(format!("failed to read {}: {e}", args.file_path)))?;
+            let original = fs::read_to_string(path)
+                .map_err(|e| ToolError(format!("failed to read {}: {e}", args.file_path)))?;
 
             let count = original.matches(&args.old_string).count();
 

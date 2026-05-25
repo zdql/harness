@@ -18,7 +18,11 @@ pub enum AgentEvent {
     /// A tool is about to execute.
     ToolCallStart { name: String, arguments: String },
     /// A tool finished executing.
-    ToolCallEnd { name: String, arguments: String, result: String },
+    ToolCallEnd {
+        name: String,
+        arguments: String,
+        result: String,
+    },
     /// A subagent has been spawned from this agent's `start_subagent` tool.
     SubagentStarted { subagent_id: String, task: String },
     /// A subagent spawned from this agent has finished.
@@ -36,6 +40,10 @@ pub enum AgentEvent {
     /// The agent loop resumed after a subagent completed and produced a new
     /// final reply. Emitted by the background continuation watcher.
     ContinuationDone { reply: String },
+    /// A progress checkpoint emitted by the agent loop (or subagent). Tools
+    /// like `check_subagent_progress` consume these to report intermediate
+    /// status to the voice model or parent agent.
+    Checkpoint { label: String },
 }
 
 /// A channel for streaming [`AgentEvent`]s out of the agent loop.

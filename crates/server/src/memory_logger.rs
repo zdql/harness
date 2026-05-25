@@ -27,7 +27,11 @@ const MEMORY_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
 fn log_path() -> Option<PathBuf> {
     let home = env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".homebrewagent").join("server_memory.log"))
+    Some(
+        PathBuf::from(home)
+            .join(".homebrewagent")
+            .join("server_memory.log"),
+    )
 }
 
 fn rss_kb() -> u64 {

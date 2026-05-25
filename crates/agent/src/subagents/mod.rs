@@ -33,7 +33,7 @@ use crate::llm::{ChatBackend, Reasoning};
 use crate::tools::{StartSubagentTool, ToolRegistry};
 
 pub mod registry;
-pub use registry::{RegistryEntry, RegistryView, SubagentRegistry};
+pub use registry::{RegistryEntry, RegistryView, RingBuffer, SubagentRegistry};
 
 // ---------------------------------------------------------------------------
 // Types

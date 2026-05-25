@@ -25,7 +25,8 @@ use crate::conversation::{self, Conversation};
 use crate::llm::{ChatCompletionTool, FunctionDefinition};
 use crate::prompts::{MAX_CONCURRENT_SUBAGENTS_PER_PARENT, MAX_SUBAGENT_DEPTH};
 use crate::subagents::{
-    self, RegistryEntry, SubagentContext, SubagentResult, SubagentSender, SubagentStatus,
+    self, RegistryEntry, RingBuffer, SubagentContext, SubagentResult, SubagentSender,
+    SubagentStatus,
 };
 
 use super::{Tool, ToolError};
@@ -196,6 +197,9 @@ impl Tool for StartSubagentTool {
             depth,
             started_at: std::time::SystemTime::now(),
             handle,
+            checkpoints: Vec::new(),
+            recent_logs: RingBuffer::new(5),
+            tool_calls_made: 0,
         });
 
         Ok(json!({
