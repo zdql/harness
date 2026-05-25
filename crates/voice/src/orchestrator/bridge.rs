@@ -1,6 +1,6 @@
 use crate::orchestrator::jobs::{OrchestratorJob, OrchestratorJobEvent, OrchestratorJobManager};
 use crate::orchestrator::progress::DEFAULT_WINDOW_SIZE;
-use crate::orchestrator::protocol::preview;
+use crate::orchestrator::shared::preview;
 use crate::types::{CheckSubagentProgressArgs, DelegateToOrchestratorArgs, VoiceUpdate};
 use serde_json::json;
 use std::collections::HashSet;
@@ -231,7 +231,10 @@ impl OrchestratorBridge {
                 "provider": snapshot.provider,
                 "last_activity": snapshot.last_message,
                 "recent_snippet": snapshot.recent_snippet,
-                "guidance": "Use this to give a concise spoken update. Do not claim the work is complete unless status is completed."
+                "elapsed_seconds": snapshot.elapsed_seconds,
+                "rate_limited": snapshot.rate_limited,
+                "retry_after_seconds": snapshot.retry_after_seconds,
+                "guidance": "Use this to give a concise spoken update. Do not claim the work is complete unless status is completed. If rate_limited is true, do not call this tool again until retry_after_seconds has elapsed."
             }),
         )
     }
@@ -419,5 +422,54 @@ mod tests {
         assert_eq!(payload["status"], "unknown");
         assert_eq!(payload["slug"], "missing_slug");
         assert_eq!(events[1]["type"], "response.create");
+    }
+
+    #[tokio::test]
+    async fn sub_agent_progress_known_slug_includes_elapsed_and_rate_limited() {
+        let mut bridge = OrchestratorBridge::new();
+        let jobs = OrchestratorJobManager::spawn(OrchestratorProvider::harness(None, None));
+        // Register a slug directly via enqueue so we don't depend on the
+        // harness binary actually being available — enqueue calls into
+        // the progress store immediately.
+        jobs.enqueue(crate::orchestrator::jobs::OrchestratorJob {
+            id: "job-test".to_string(),
+            slug: "refactor_docs".to_string(),
+            args: crate::types::DelegateToOrchestratorArgs {
+                slug: "refactor_docs".to_string(),
+                user_intent: "noop".to_string(),
+                recent_context: String::new(),
+                urgency: "background".to_string(),
+                suggested_user_update: None,
+            },
+        })
+        .expect("enqueue should succeed");
+
+        let mk_call = |call_id: &str| json!({
+            "type": "response.function_call_arguments.done",
+            "name": "sub_agent_progress",
+            "call_id": call_id,
+            "arguments": "{\"slug\":\"refactor_docs\"}"
+        });
+
+        let first = bridge
+            .handle_realtime_event(&mk_call("call_progress_first"), &jobs)
+            .expect("first progress call should succeed");
+        let first_payload: serde_json::Value =
+            serde_json::from_str(first[0]["item"]["output"].as_str().unwrap()).unwrap();
+        assert_eq!(first_payload["ok"], true);
+        assert_eq!(first_payload["slug"], "refactor_docs");
+        assert!(first_payload.get("elapsed_seconds").is_some());
+        assert_eq!(first_payload["rate_limited"], false);
+
+        // Immediate second call should be flagged rate_limited but still
+        // ok=true and carry the cached last_activity.
+        let second = bridge
+            .handle_realtime_event(&mk_call("call_progress_second"), &jobs)
+            .expect("second progress call should succeed");
+        let second_payload: serde_json::Value =
+            serde_json::from_str(second[0]["item"]["output"].as_str().unwrap()).unwrap();
+        assert_eq!(second_payload["ok"], true);
+        assert_eq!(second_payload["rate_limited"], true);
+        assert!(second_payload["retry_after_seconds"].as_u64().unwrap_or(0) > 0);
     }
 }

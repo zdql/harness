@@ -1,6 +1,8 @@
-use super::process::read_logged_stream;
-use super::progress::ProgressReporter;
-use super::protocol::{SendResult, format_job, preview};
+//! Wrapper around the OpenAI Codex CLI (`codex exec`).
+
+use crate::orchestrator::interface::SendResult;
+use crate::orchestrator::progress::ProgressReporter;
+use crate::orchestrator::shared::{format_job, preview, read_logged_stream};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,13 +18,14 @@ use tokio::process::Command;
 pub(crate) struct CodexClient {
     path: PathBuf,
     model: Option<String>,
+    conversation_id: String,
 }
 
 impl CodexClient {
-    /// Prepare a Codex non-interactive client.
     pub(crate) async fn spawn(
         codex_bin: Option<String>,
         model: Option<String>,
+        conversation_id: String,
     ) -> Result<Self, String> {
         let path = resolve_codex_bin(codex_bin)?;
 
@@ -50,18 +53,20 @@ impl CodexClient {
         }
 
         eprintln!("codex client spawned bin={}", path.display());
-        Ok(Self { path, model })
+        Ok(Self {
+            path,
+            model,
+            conversation_id,
+        })
     }
 
-    /// Send a user message to Codex and return the text reply.
-    ///
-    /// Each call spawns `codex exec` with the prompt on stdin so shell escaping
-    /// is avoided. We ask Codex to write its final assistant message to a temp
-    /// file because formatted stdout may contain progress output.
+    pub(crate) fn conversation_id(&self) -> &str {
+        &self.conversation_id
+    }
+
     pub(crate) async fn send_message_until_done_for_job(
         &mut self,
         job_id: &str,
-        _conversation_id: &str,
         message: &str,
         progress: Option<ProgressReporter>,
     ) -> Result<SendResult, String> {
@@ -79,10 +84,7 @@ impl CodexClient {
         let mut command = Command::new(&self.path);
         command
             .arg("exec")
-            .arg("--sandbox")
-            .arg("workspace-write")
-            .arg("-c")
-            .arg("approval_policy=\"never\"")
+            .arg("--full-auto")
             .arg("--output-last-message")
             .arg(&output_path)
             .arg("-")
@@ -197,7 +199,6 @@ fn output_path_for_job(job_id: &str) -> PathBuf {
 }
 
 fn which_codex() -> Result<PathBuf, String> {
-    // Check a few common install locations before falling back to PATH.
     let candidates = [
         PathBuf::from("/usr/local/bin/codex"),
         PathBuf::from(std::env::var("HOME").unwrap_or_default() + "/.local/bin/codex"),
@@ -209,6 +210,5 @@ fn which_codex() -> Result<PathBuf, String> {
         }
     }
 
-    // Fall back to bare "codex" and let the OS resolve via PATH.
     Ok(PathBuf::from("codex"))
 }

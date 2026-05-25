@@ -1,8 +1,11 @@
-use super::progress::ProgressReporter;
-use super::protocol::{
-    CreateResult, RpcLogContext, RpcResponse, SendResult, ToolCallInfo, compact_json, format_job,
-    preview,
+//! JSON-RPC client that drives the `harness-server` process over stdio.
+
+use crate::orchestrator::harness::protocol::{
+    CreateResult, RpcLogContext, RpcResponse,
 };
+use crate::orchestrator::interface::{SendResult, ToolCallInfo};
+use crate::orchestrator::progress::ProgressReporter;
+use crate::orchestrator::shared::{compact_json, format_job, preview};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -10,14 +13,15 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-pub(crate) struct OrchestratorClient {
+pub(crate) struct HarnessClient {
     child: Child,
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
     next_id: i64,
+    conversation_id: String,
 }
 
-impl OrchestratorClient {
+impl HarnessClient {
     pub(crate) async fn spawn(server_bin: Option<String>) -> Result<Self, String> {
         let path = match server_bin {
             Some(path) => PathBuf::from(path),
@@ -45,7 +49,16 @@ impl OrchestratorClient {
             stdin,
             stdout: BufReader::new(stdout).lines(),
             next_id: 1,
+            conversation_id: String::new(),
         })
+    }
+
+    pub(crate) fn set_conversation_id(&mut self, id: String) {
+        self.conversation_id = id;
+    }
+
+    pub(crate) fn conversation_id(&self) -> &str {
+        &self.conversation_id
     }
 
     pub(crate) async fn create_conversation(&mut self) -> Result<String, String> {
@@ -64,44 +77,33 @@ impl OrchestratorClient {
     pub(crate) async fn send_message_until_done_for_job(
         &mut self,
         job_id: &str,
-        conversation_id: &str,
         message: &str,
         progress: Option<ProgressReporter>,
     ) -> Result<SendResult, String> {
-        self.send_message_until_done_with_context(conversation_id, message, Some(job_id), progress)
-            .await
-    }
-
-    async fn send_message_until_done_with_context(
-        &mut self,
-        conversation_id: &str,
-        message: &str,
-        job_id: Option<&str>,
-        progress: Option<ProgressReporter>,
-    ) -> Result<SendResult, String> {
+        let conversation_id = self.conversation_id.clone();
         let mut result = self
-            .send_message_with_context(conversation_id, message, job_id, progress.clone())
+            .send_message_with_context(&conversation_id, message, Some(job_id), progress.clone())
             .await?;
         eprintln!(
             "orchestrator rpc recv conversation.send{} conversation={} reply_bytes={} tool_calls={} suspended={}",
-            format_job(job_id),
+            format_job(Some(job_id)),
             conversation_id,
             result.reply.len(),
             result.tool_calls.len(),
             result.suspended
         );
-        log_tool_call_summaries(job_id, conversation_id, &result.tool_calls);
+        log_tool_call_summaries(Some(job_id), &conversation_id, &result.tool_calls);
         if result.suspended {
             eprintln!(
                 "orchestrator rpc wait continuation_done{} conversation={}",
-                format_job(job_id),
+                format_job(Some(job_id)),
                 conversation_id
             );
             result.reply = self
                 .wait_for_continuation_done(
                     RpcLogContext {
-                        conversation_id: Some(conversation_id),
-                        job_id,
+                        conversation_id: Some(&conversation_id),
+                        job_id: Some(job_id),
                     },
                     progress.clone(),
                 )
@@ -109,7 +111,7 @@ impl OrchestratorClient {
             result.suspended = false;
             eprintln!(
                 "orchestrator rpc recv continuation_done{} conversation={} reply_bytes={}",
-                format_job(job_id),
+                format_job(Some(job_id)),
                 conversation_id,
                 result.reply.len()
             );
@@ -441,7 +443,7 @@ fn log_tool_call_summaries(
     }
 }
 
-impl Drop for OrchestratorClient {
+impl Drop for HarnessClient {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
     }

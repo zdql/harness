@@ -1,6 +1,8 @@
-use super::process::read_logged_stream;
-use super::progress::ProgressReporter;
-use super::protocol::{SendResult, format_job, preview};
+//! Wrapper around the `claude` CLI in print mode.
+
+use crate::orchestrator::interface::SendResult;
+use crate::orchestrator::progress::ProgressReporter;
+use crate::orchestrator::shared::{format_job, preview, read_logged_stream};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -15,6 +17,7 @@ use tokio::process::Command;
 pub(crate) struct ClaudeClient {
     path: PathBuf,
     model: Option<String>,
+    conversation_id: String,
     session_id: Option<String>,
 }
 
@@ -22,6 +25,7 @@ impl ClaudeClient {
     pub(crate) async fn spawn(
         claude_bin: Option<String>,
         model: Option<String>,
+        conversation_id: String,
     ) -> Result<Self, String> {
         let path = resolve_claude_bin(claude_bin)?;
 
@@ -51,14 +55,18 @@ impl ClaudeClient {
         Ok(Self {
             path,
             model,
+            conversation_id,
             session_id: None,
         })
+    }
+
+    pub(crate) fn conversation_id(&self) -> &str {
+        &self.conversation_id
     }
 
     pub(crate) async fn send_message_until_done_for_job(
         &mut self,
         job_id: &str,
-        conversation_id: &str,
         message: &str,
         progress: Option<ProgressReporter>,
     ) -> Result<SendResult, String> {
@@ -79,8 +87,7 @@ impl ClaudeClient {
             .arg("stream-json")
             .arg("--verbose")
             .arg("--include-partial-messages")
-            .arg("--permission-mode")
-            .arg("acceptEdits")
+            .arg("--dangerously-skip-permissions")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -91,7 +98,7 @@ impl ClaudeClient {
         if let Some(session_id) = self.session_id.as_deref() {
             command.arg("--resume").arg(session_id);
         } else {
-            command.arg("--name").arg(conversation_id);
+            command.arg("--name").arg(&self.conversation_id);
         }
 
         let mut child = command

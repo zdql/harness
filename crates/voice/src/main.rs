@@ -198,10 +198,10 @@ fn build_orchestrator_provider(
 ) -> Result<OrchestratorProvider, String> {
     match provider {
         "harness" => Ok(OrchestratorProvider::harness(server_bin, conversation_id)),
-        "codex" => Ok(OrchestratorProvider::codex(codex_bin, codex_model)),
+        "openai" | "codex" => Ok(OrchestratorProvider::openai(codex_bin, codex_model)),
         "claude" | "claude-code" => Ok(OrchestratorProvider::claude(claude_bin, claude_model)),
         other => Err(format!(
-            "unknown orchestrator provider: {other} (expected harness, codex, or claude)"
+            "unknown orchestrator provider: {other} (expected harness, openai, or claude)"
         )),
     }
 }
@@ -218,8 +218,9 @@ options:
   --urgency <now|background>      Relay urgency. Defaults to background.
   --suggested-user-update <text>  Optional short phrase the voice model may say.
   --slug <slug>                   Background task slug. Defaults to default.
-  --provider <harness|codex|claude>
+  --provider <harness|openai|claude>
                                   Orchestrator backend. Defaults to harness.
+                                  `codex` is accepted as an alias for `openai`.
   --server-bin <path>             Path to harness-server (harness provider).
   --codex-bin <path>              Path to codex binary (codex provider).
   --codex-model <model>           Model for codex to use (codex provider).

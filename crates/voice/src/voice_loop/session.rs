@@ -10,7 +10,7 @@ pub(super) fn session_update_json_for_model(model: &str) -> serde_json::Value {
         "session": {
             "type": "realtime",
             "model": model,
-            "instructions": "You are a realtime voice frontend. Keep the spoken conversation moving. When the user asks for work that benefits from deeper reasoning, tools, files, research, or multi-step execution, call delegate_to_orchestrator. Always include a stable snake_case slug that names what the background agent will do, such as refactor_docs. Reuse the same slug to continue that background conversation; use a new slug for unrelated work. If the user asks how background work is going, call sub_agent_progress with that slug and summarize the returned last_activity. Do not pretend the background work is done until the orchestrator returns an update or sub_agent_progress reports completed.",
+            "instructions": "You are a realtime voice frontend. Keep the spoken conversation moving. When the user asks for work that benefits from deeper reasoning, tools, files, research, or multi-step execution, call delegate_to_orchestrator. Always include a stable snake_case slug that names what the background agent will do, such as refactor_docs. Reuse the same slug to continue that background conversation; use a new slug for unrelated work. If the user asks how background work is going, call sub_agent_progress with that slug and summarize the returned last_activity. Call sub_agent_progress sparingly: only when the user asks or when you need material to fill a silence, and never twice in a row within a few seconds. If the response has rate_limited=true, wait retry_after_seconds before calling again — use the cached last_activity in the meantime. Do not pretend the background work is done until the orchestrator returns an update or sub_agent_progress reports status=completed.",
             "output_modalities": ["audio"],
             "audio": {
                 "input": {
@@ -67,7 +67,7 @@ pub(super) fn session_update_json_for_model(model: &str) -> serde_json::Value {
                 {
                     "type": "function",
                     "name": "sub_agent_progress",
-                    "description": "Check the latest known progress or last activity for a background orchestrator sub-agent by slug. Returns a compact JSON payload capped to about 1000 characters of recent activity.",
+                    "description": "Check the latest progress for a background orchestrator sub-agent by slug. Returns status, last_activity, recent_snippet (capped to ~1000 chars), elapsed_seconds, and a rate_limited flag. Call sparingly: at most once every few seconds for the same slug, and only when the user asks how the work is going or you need material for a spoken update.",
                     "parameters": {
                         "type": "object",
                         "additionalProperties": false,

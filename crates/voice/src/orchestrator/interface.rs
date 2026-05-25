@@ -1,33 +1,94 @@
-use super::client::OrchestratorClient;
-use super::claude::ClaudeClient;
-use super::codex::CodexClient;
-use super::progress::ProgressReporter;
-use super::protocol::SendResult;
+//! Provider-facing boundary for background coding agents.
+//!
+//! Code outside the `orchestrator` module — the voice loop, the realtime
+//! bridge, and the job manager — only ever sees the types in this file:
+//!
+//! - [`OrchestratorProvider`] — a clonable factory configured per backend.
+//! - [`OrchestratorSession`] — one in-flight conversation with a backend.
+//! - [`SendResult`] / [`ToolCallInfo`] — values flowing back to callers.
+//! - [`Provider`] / [`Session`] — the traits each backend implements.
+//!
+//! Provider crates (`harness/`, `claude/`, `openai/`) implement the traits;
+//! the rest of the app depends only on this interface.
 
-// Provider-facing boundary for background coding agents.
-//
-// The voice loop should talk in terms of task slugs and messages. The current
-// implementation is Harness-over-JSON-RPC, but future providers can be added
-// here without changing the Realtime bridge or job manager.
-#[derive(Clone, Debug)]
-pub(crate) struct OrchestratorProvider {
-    kind: OrchestratorProviderKind,
-    initial_conversation_id: Option<String>,
+use crate::orchestrator::claude::ClaudeProvider;
+use crate::orchestrator::harness::HarnessProvider;
+use crate::orchestrator::openai::OpenAiProvider;
+use crate::orchestrator::progress::ProgressReporter;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+// ── Interface types ─────────────────────────────────────────────────────
+
+/// Reply produced by a single round-trip with the background agent.
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct SendResult {
+    pub(crate) reply: String,
+    #[serde(default)]
+    pub(crate) tool_calls: Vec<ToolCallInfo>,
+    #[serde(default)]
+    pub(crate) suspended: bool,
 }
 
-#[derive(Clone, Debug)]
-enum OrchestratorProviderKind {
-    Harness {
-        server_bin: Option<String>,
-    },
-    Codex {
-        codex_bin: Option<String>,
-        model: Option<String>,
-    },
-    Claude {
-        claude_bin: Option<String>,
-        model: Option<String>,
-    },
+/// Summary of a tool call observed during a send. Empty for providers that
+/// do not expose tool-call details.
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct ToolCallInfo {
+    pub(crate) name: String,
+    pub(crate) arguments: String,
+    pub(crate) result: String,
+}
+
+// ── Provider trait ──────────────────────────────────────────────────────
+
+/// Backend-agnostic factory for orchestrator sessions.
+///
+/// Implementations live next to each backend (e.g. `harness::HarnessProvider`)
+/// and are intentionally cheap to clone and reuse: heavy work happens inside
+/// [`Provider::open_session`].
+#[async_trait]
+pub(crate) trait Provider: Send + Sync {
+    /// Stable name used in logs and progress events.
+    fn name(&self) -> &'static str;
+
+    /// Spawn a new session keyed to `slug`. Callers that reuse a slug expect
+    /// the provider to route them back into the same logical conversation if
+    /// the backend supports continuity.
+    async fn open_session(&self, slug: &str) -> Result<Box<dyn Session>, String>;
+}
+
+/// A single live orchestrator conversation.
+///
+/// Sessions are not `Sync`: each session is driven by exactly one slug worker
+/// inside the job manager.
+#[async_trait]
+pub(crate) trait Session: Send {
+    /// Stable identifier for this conversation as reported by the backend.
+    fn conversation_id(&self) -> &str;
+
+    /// Stable backend name; mirrors [`Provider::name`].
+    fn provider_name(&self) -> &'static str;
+
+    /// Send a user message and wait for the final assistant reply.
+    async fn send_message_until_done_for_job(
+        &mut self,
+        job_id: &str,
+        message: &str,
+        progress: Option<ProgressReporter>,
+    ) -> Result<SendResult, String>;
+}
+
+// ── Public wrappers used outside `orchestrator/` ────────────────────────
+
+/// Configured orchestrator backend.
+///
+/// A thin wrapper over `Arc<dyn Provider>` so the rest of the voice app can
+/// pass providers around as plain values without naming concrete backend
+/// types.
+#[derive(Clone)]
+pub(crate) struct OrchestratorProvider {
+    inner: Arc<dyn Provider>,
 }
 
 impl OrchestratorProvider {
@@ -36,98 +97,54 @@ impl OrchestratorProvider {
         initial_conversation_id: Option<String>,
     ) -> Self {
         Self {
-            kind: OrchestratorProviderKind::Harness { server_bin },
-            initial_conversation_id,
+            inner: Arc::new(HarnessProvider::new(server_bin, initial_conversation_id)),
         }
     }
 
-    pub(crate) fn codex(codex_bin: Option<String>, model: Option<String>) -> Self {
+    pub(crate) fn openai(codex_bin: Option<String>, model: Option<String>) -> Self {
         Self {
-            kind: OrchestratorProviderKind::Codex { codex_bin, model },
-            initial_conversation_id: None,
+            inner: Arc::new(OpenAiProvider::new(codex_bin, model)),
         }
     }
 
     pub(crate) fn claude(claude_bin: Option<String>, model: Option<String>) -> Self {
         Self {
-            kind: OrchestratorProviderKind::Claude { claude_bin, model },
-            initial_conversation_id: None,
+            inner: Arc::new(ClaudeProvider::new(claude_bin, model)),
         }
     }
 
     pub(crate) async fn open_session(&self, slug: &str) -> Result<OrchestratorSession, String> {
-        match &self.kind {
-            OrchestratorProviderKind::Harness { server_bin } => {
-                let mut client = OrchestratorClient::spawn(server_bin.clone()).await?;
-                let conversation_id =
-                    if let Some(conversation_id) = self.initial_conversation_id_for_slug(slug) {
-                        conversation_id.to_string()
-                    } else {
-                        client.create_conversation().await?
-                    };
-                eprintln!(
-                    "orchestrator session opened provider=harness slug={} conversation={}",
-                    slug, conversation_id
-                );
-                Ok(OrchestratorSession {
-                    slug: slug.to_string(),
-                    conversation_id,
-                    client: OrchestratorSessionClient::Harness(client),
-                })
-            }
-            OrchestratorProviderKind::Codex { codex_bin, model } => {
-                let client = CodexClient::spawn(codex_bin.clone(), model.clone()).await?;
-                let conversation_id = format!("codex-{}", slug);
-                eprintln!(
-                    "orchestrator session opened provider=codex slug={} conversation={}",
-                    slug, conversation_id
-                );
-                Ok(OrchestratorSession {
-                    slug: slug.to_string(),
-                    conversation_id,
-                    client: OrchestratorSessionClient::Codex(client),
-                })
-            }
-            OrchestratorProviderKind::Claude { claude_bin, model } => {
-                let client = ClaudeClient::spawn(claude_bin.clone(), model.clone()).await?;
-                let conversation_id = format!("claude-{}", slug);
-                eprintln!(
-                    "orchestrator session opened provider=claude slug={} conversation={}",
-                    slug, conversation_id
-                );
-                Ok(OrchestratorSession {
-                    slug: slug.to_string(),
-                    conversation_id,
-                    client: OrchestratorSessionClient::Claude(client),
-                })
-            }
-        }
-    }
-
-    fn initial_conversation_id_for_slug(&self, slug: &str) -> Option<&str> {
-        if matches!(slug, "default" | "main") {
-            self.initial_conversation_id.as_deref()
-        } else {
-            None
-        }
+        let session = self.inner.open_session(slug).await?;
+        eprintln!(
+            "orchestrator session opened provider={} slug={} conversation={}",
+            session.provider_name(),
+            slug,
+            session.conversation_id()
+        );
+        Ok(OrchestratorSession {
+            slug: slug.to_string(),
+            inner: session,
+        })
     }
 }
 
-enum OrchestratorSessionClient {
-    Harness(OrchestratorClient),
-    Codex(CodexClient),
-    Claude(ClaudeClient),
+impl std::fmt::Debug for OrchestratorProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrchestratorProvider")
+            .field("name", &self.inner.name())
+            .finish()
+    }
 }
 
+/// Live orchestrator session as seen by the rest of the voice app.
 pub(crate) struct OrchestratorSession {
     slug: String,
-    conversation_id: String,
-    client: OrchestratorSessionClient,
+    inner: Box<dyn Session>,
 }
 
 impl OrchestratorSession {
     pub(crate) fn conversation_id(&self) -> &str {
-        &self.conversation_id
+        self.inner.conversation_id()
     }
 
     pub(crate) async fn send_message_until_done_for_job(
@@ -138,51 +155,14 @@ impl OrchestratorSession {
     ) -> Result<SendResult, String> {
         eprintln!(
             "orchestrator session send provider={} slug={} job={} conversation={} message_bytes={}",
-            self.provider_name(),
+            self.inner.provider_name(),
             self.slug,
             job_id,
-            self.conversation_id,
+            self.inner.conversation_id(),
             message.len()
         );
-        match &mut self.client {
-            OrchestratorSessionClient::Harness(client) => {
-                client
-                    .send_message_until_done_for_job(
-                        job_id,
-                        &self.conversation_id,
-                        message,
-                        progress,
-                    )
-                    .await
-            }
-            OrchestratorSessionClient::Codex(client) => {
-                client
-                    .send_message_until_done_for_job(
-                        job_id,
-                        &self.conversation_id,
-                        message,
-                        progress,
-                    )
-                    .await
-            }
-            OrchestratorSessionClient::Claude(client) => {
-                client
-                    .send_message_until_done_for_job(
-                        job_id,
-                        &self.conversation_id,
-                        message,
-                        progress,
-                    )
-                    .await
-            }
-        }
-    }
-
-    fn provider_name(&self) -> &'static str {
-        match self.client {
-            OrchestratorSessionClient::Harness(_) => "harness",
-            OrchestratorSessionClient::Codex(_) => "codex",
-            OrchestratorSessionClient::Claude(_) => "claude",
-        }
+        self.inner
+            .send_message_until_done_for_job(job_id, message, progress)
+            .await
     }
 }

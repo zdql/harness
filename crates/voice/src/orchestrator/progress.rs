@@ -7,9 +7,10 @@ use serde::Serialize;
 /// Maximum number of progress entries retained per job.
 const MAX_BUFFER_ENTRIES: usize = 20;
 
-/// Minimum interval (in seconds) between progress queries for the same job
-/// to avoid flooding the Realtime API.
-const RATE_LIMIT_SECS: u64 = 2;
+/// Minimum interval (in seconds) between progress queries for the same job.
+/// Voice cadence: well under a typical conversational gap, but enough to
+/// discourage mechanical re-polling in the same speaking turn.
+const RATE_LIMIT_SECS: u64 = 5;
 
 /// Default character window for the recent_snippet field.
 pub(crate) const DEFAULT_WINDOW_SIZE: usize = 1000;
@@ -43,6 +44,16 @@ pub(crate) struct ProgressSnapshot {
     pub provider: String,
     pub last_message: String,
     pub recent_snippet: String,
+    /// Seconds since the job was registered (or since it went `running` if
+    /// it has progressed past `Queued`). Always >= 0.
+    pub elapsed_seconds: f64,
+    /// True when the caller queried before the per-slug rate limit elapsed.
+    /// The snapshot still carries the most recent cached fields so the model
+    /// has something to say; this flag signals "don't poll again yet."
+    pub rate_limited: bool,
+    /// When `rate_limited` is true, the number of seconds the caller should
+    /// wait before re-querying. Zero otherwise.
+    pub retry_after_seconds: u64,
 }
 
 /// Lightweight writer that provider clients can clone into async read loops.
@@ -72,6 +83,10 @@ struct JobProgress {
     /// Bounded ring of recent progress entries (newest last).
     recent_buffer: VecDeque<String>,
     last_updated: Instant,
+    /// Wall-clock origin for `elapsed_seconds`. Set on `register_job` and
+    /// re-stamped on `set_running` so the voice model gets time-in-flight
+    /// rather than time-in-queue once the job actually starts.
+    started_at: Instant,
 }
 
 struct ProgressInner {
@@ -98,6 +113,7 @@ impl ProgressStore {
     /// Register or replace a slug in the progress store.
     pub fn register_job(&self, slug: &str, provider: &str) {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
+        let now = Instant::now();
         inner.jobs.insert(
             slug.to_string(),
             JobProgress {
@@ -105,7 +121,8 @@ impl ProgressStore {
                 provider: provider.to_string(),
                 last_message: String::new(),
                 recent_buffer: VecDeque::new(),
-                last_updated: Instant::now(),
+                last_updated: now,
+                started_at: now,
             },
         );
     }
@@ -114,8 +131,11 @@ impl ProgressStore {
     pub fn set_running(&self, slug: &str) {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
         if let Some(progress) = inner.jobs.get_mut(slug) {
+            let now = Instant::now();
             progress.status = JobStatus::Running;
-            progress.last_updated = Instant::now();
+            progress.last_updated = now;
+            // Reset the clock at run-start so elapsed reflects working time.
+            progress.started_at = now;
         }
     }
 
@@ -168,8 +188,9 @@ impl ProgressStore {
     }
 
     /// Query the progress of a job. Returns `None` if the job is unknown.
-    /// Applies rate limiting: returns a "rate_limited" snapshot if queried
-    /// too frequently, containing only the status and provider fields.
+    /// Applies rate limiting: when the caller polls within `RATE_LIMIT_SECS`,
+    /// the snapshot still carries the cached fields but `rate_limited` is set
+    /// so the voice model knows to back off.
     pub fn get_update(&self, slug: &str, window_size: Option<usize>) -> Option<ProgressSnapshot> {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
 
@@ -178,24 +199,25 @@ impl ProgressStore {
         let provider = progress.provider.clone();
         let last_message = progress.last_message.clone();
         let recent_buffer = progress.recent_buffer.clone();
+        let elapsed_seconds = progress.started_at.elapsed().as_secs_f64();
 
-        // Rate limit check.
         let now = Instant::now();
-        if let Some(last) = inner.last_query.get(slug) {
-            if now.duration_since(*last).as_secs() < RATE_LIMIT_SECS {
-                // Return a minimal snapshot indicating rate limit.
-                return Some(ProgressSnapshot {
-                    status,
-                    provider,
-                    last_message: String::new(),
-                    recent_snippet: format!(
-                        "(rate limited — wait {}s between queries)",
-                        RATE_LIMIT_SECS
-                    ),
-                });
+        let (rate_limited, retry_after_seconds) = match inner.last_query.get(slug) {
+            Some(last) => {
+                let since = now.duration_since(*last).as_secs();
+                if since < RATE_LIMIT_SECS {
+                    (true, RATE_LIMIT_SECS - since)
+                } else {
+                    (false, 0)
+                }
             }
+            None => (false, 0),
+        };
+        // Only stamp the last_query when the caller is actually allowed to
+        // pull a fresh snapshot. A blocked poll should not extend the window.
+        if !rate_limited {
+            inner.last_query.insert(slug.to_string(), now);
         }
-        inner.last_query.insert(slug.to_string(), now);
 
         let max_chars = window_size.unwrap_or(DEFAULT_WINDOW_SIZE);
         let recent_snippet = truncate_buffer(&recent_buffer, max_chars);
@@ -205,6 +227,9 @@ impl ProgressStore {
             provider,
             last_message,
             recent_snippet,
+            elapsed_seconds,
+            rate_limited,
+            retry_after_seconds,
         })
     }
 
@@ -318,13 +343,27 @@ mod tests {
 
         // First query should succeed.
         let snap1 = store.get_update("job-rl", None).unwrap();
-        assert!(!snap1.recent_snippet.contains("rate limited"));
+        assert!(!snap1.rate_limited);
+        assert_eq!(snap1.retry_after_seconds, 0);
+        assert_eq!(snap1.last_message, "working");
 
-        // Immediate second query should be rate limited.
+        // Immediate second query should be rate limited but still return
+        // the cached snapshot (last_message + recent_snippet).
         let snap2 = store.get_update("job-rl", None).unwrap();
-        assert!(snap2.recent_snippet.contains("rate limited"));
-        // Status should still be available.
+        assert!(snap2.rate_limited);
+        assert!(snap2.retry_after_seconds > 0);
         assert_eq!(snap2.status, JobStatus::Running);
+        assert_eq!(snap2.last_message, "working");
+        assert!(snap2.recent_snippet.contains("working"));
+    }
+
+    #[test]
+    fn elapsed_seconds_reported() {
+        let store = ProgressStore::new();
+        store.register_job("job-el", "harness");
+        store.set_running("job-el");
+        let snap = store.get_update("job-el", None).unwrap();
+        assert!(snap.elapsed_seconds >= 0.0);
     }
 
     #[test]
