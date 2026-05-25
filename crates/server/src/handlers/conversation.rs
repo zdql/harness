@@ -311,8 +311,8 @@ async fn subagent_continuation_loop(
         let store = store()?;
         // Pull the latest on-disk state so any user messages sent during the
         // suspension window are visible to the resumed LLM call.
-        let mut conv = conversation::load(&store, &conv_id)
-            .map_err(|e| format!("conv reload failed: {e}"))?;
+        let mut conv =
+            conversation::load(&store, &conv_id).map_err(|e| format!("conv reload failed: {e}"))?;
 
         agent::agent::inject_subagent_result(
             &store,

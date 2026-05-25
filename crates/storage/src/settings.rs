@@ -37,7 +37,9 @@ impl Default for Settings {
 
 fn settings_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".agent-harness").join("settings.json")
+    PathBuf::from(home)
+        .join(".agent-harness")
+        .join("settings.json")
 }
 
 /// Read current settings from disk. Returns defaults if the file doesn't exist.

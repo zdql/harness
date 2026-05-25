@@ -54,7 +54,9 @@ impl FsStore {
     /// Creates the directory if it doesn't exist.
     pub fn new() -> Result<Self, FsError> {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let dir = PathBuf::from(home).join(".agent-harness").join("conversations");
+        let dir = PathBuf::from(home)
+            .join(".agent-harness")
+            .join("conversations");
         fs::create_dir_all(&dir)?;
         Ok(Self { dir })
     }

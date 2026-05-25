@@ -19,7 +19,9 @@ mod rpc;
 use std::sync::Arc;
 
 use agent::llm::{ChatBackend, ChatClient};
-use agent::tools::{AdditionTool, BashTool, EditTool, GlobTool, GrepTool, ReadTool, ToolRegistry, WriteTool};
+use agent::tools::{
+    AdditionTool, BashTool, EditTool, GlobTool, GrepTool, ReadTool, ToolRegistry, WriteTool,
+};
 use rpc::methods::RpcMethod;
 use rpc::{INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND, Notification, Request, Response};
 use serde_json::Value;
