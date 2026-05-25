@@ -138,8 +138,7 @@ impl ProgressProvider for HarnessProgressProvider {
         match entry {
             Some(p) => {
                 let last_log = p.recent_logs.last().map(|e| e.summary.clone());
-                let recent: Vec<String> =
-                    p.recent_logs.iter().map(|e| e.summary.clone()).collect();
+                let recent: Vec<String> = p.recent_logs.iter().map(|e| e.summary.clone()).collect();
                 ProgressUpdate {
                     recent_output: if recent.is_empty() {
                         None

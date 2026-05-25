@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::Serialize;
@@ -23,7 +23,6 @@ pub(crate) enum JobStatus {
     Running,
     Completed,
     Failed,
-    Unknown,
 }
 
 impl std::fmt::Display for JobStatus {
@@ -33,7 +32,6 @@ impl std::fmt::Display for JobStatus {
             Self::Running => "running",
             Self::Completed => "completed",
             Self::Failed => "failed",
-            Self::Unknown => "unknown",
         })
     }
 }
@@ -45,6 +43,23 @@ pub(crate) struct ProgressSnapshot {
     pub provider: String,
     pub last_message: String,
     pub recent_snippet: String,
+}
+
+/// Lightweight writer that provider clients can clone into async read loops.
+#[derive(Clone)]
+pub(crate) struct ProgressReporter {
+    store: Arc<ProgressStore>,
+    slug: String,
+}
+
+impl ProgressReporter {
+    pub(crate) fn new(store: Arc<ProgressStore>, slug: String) -> Self {
+        Self { store, slug }
+    }
+
+    pub(crate) fn push(&self, message: &str) {
+        self.store.push_progress(&self.slug, message);
+    }
 }
 
 // ── Internal tracking ──────────────────────────────────────────────────
@@ -80,11 +95,11 @@ impl ProgressStore {
         }
     }
 
-    /// Register a new job in the progress store.
-    pub fn register_job(&self, job_id: &str, provider: &str) {
+    /// Register or replace a slug in the progress store.
+    pub fn register_job(&self, slug: &str, provider: &str) {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
         inner.jobs.insert(
-            job_id.to_string(),
+            slug.to_string(),
             JobProgress {
                 status: JobStatus::Queued,
                 provider: provider.to_string(),
@@ -96,9 +111,9 @@ impl ProgressStore {
     }
 
     /// Mark a previously registered job as running.
-    pub fn set_running(&self, job_id: &str) {
+    pub fn set_running(&self, slug: &str) {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
-        if let Some(progress) = inner.jobs.get_mut(job_id) {
+        if let Some(progress) = inner.jobs.get_mut(slug) {
             progress.status = JobStatus::Running;
             progress.last_updated = Instant::now();
         }
@@ -106,13 +121,13 @@ impl ProgressStore {
 
     /// Append a progress entry for a running job.
     /// The message is trimmed and empty strings are silently ignored.
-    pub fn push_progress(&self, job_id: &str, message: &str) {
+    pub fn push_progress(&self, slug: &str, message: &str) {
         let trimmed = message.trim();
         if trimmed.is_empty() {
             return;
         }
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
-        if let Some(progress) = inner.jobs.get_mut(job_id) {
+        if let Some(progress) = inner.jobs.get_mut(slug) {
             progress.last_message = trimmed.to_string();
             if progress.recent_buffer.len() >= MAX_BUFFER_ENTRIES {
                 progress.recent_buffer.pop_front();
@@ -123,9 +138,9 @@ impl ProgressStore {
     }
 
     /// Mark a job as completed with the final reply.
-    pub fn set_completed(&self, job_id: &str, result: &str) {
+    pub fn set_completed(&self, slug: &str, result: &str) {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
-        if let Some(progress) = inner.jobs.get_mut(job_id) {
+        if let Some(progress) = inner.jobs.get_mut(slug) {
             progress.status = JobStatus::Completed;
             let trimmed = result.trim();
             if !trimmed.is_empty() {
@@ -140,9 +155,9 @@ impl ProgressStore {
     }
 
     /// Mark a job as failed with an error message.
-    pub fn set_failed(&self, job_id: &str, error: &str) {
+    pub fn set_failed(&self, slug: &str, error: &str) {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
-        if let Some(progress) = inner.jobs.get_mut(job_id) {
+        if let Some(progress) = inner.jobs.get_mut(slug) {
             progress.status = JobStatus::Failed;
             let trimmed = error.trim();
             if !trimmed.is_empty() {
@@ -155,14 +170,10 @@ impl ProgressStore {
     /// Query the progress of a job. Returns `None` if the job is unknown.
     /// Applies rate limiting: returns a "rate_limited" snapshot if queried
     /// too frequently, containing only the status and provider fields.
-    pub fn get_update(
-        &self,
-        job_id: &str,
-        window_size: Option<usize>,
-    ) -> Option<ProgressSnapshot> {
+    pub fn get_update(&self, slug: &str, window_size: Option<usize>) -> Option<ProgressSnapshot> {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
 
-        let progress = inner.jobs.get(job_id)?;
+        let progress = inner.jobs.get(slug)?;
         let status = progress.status;
         let provider = progress.provider.clone();
         let last_message = progress.last_message.clone();
@@ -170,7 +181,7 @@ impl ProgressStore {
 
         // Rate limit check.
         let now = Instant::now();
-        if let Some(last) = inner.last_query.get(job_id) {
+        if let Some(last) = inner.last_query.get(slug) {
             if now.duration_since(*last).as_secs() < RATE_LIMIT_SECS {
                 // Return a minimal snapshot indicating rate limit.
                 return Some(ProgressSnapshot {
@@ -184,7 +195,7 @@ impl ProgressStore {
                 });
             }
         }
-        inner.last_query.insert(job_id.to_string(), now);
+        inner.last_query.insert(slug.to_string(), now);
 
         let max_chars = window_size.unwrap_or(DEFAULT_WINDOW_SIZE);
         let recent_snippet = truncate_buffer(&recent_buffer, max_chars);
@@ -200,9 +211,9 @@ impl ProgressStore {
     /// Remove a job from the store (e.g. after it has been completed for a
     /// while and memory should be reclaimed). Returns true if the job
     /// existed.
-    pub fn remove(&self, job_id: &str) -> bool {
+    pub fn remove(&self, slug: &str) -> bool {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
-        inner.jobs.remove(job_id).is_some()
+        inner.jobs.remove(slug).is_some()
     }
 }
 
@@ -378,7 +389,19 @@ mod tests {
         let progress = inner.jobs.get("job-buf").unwrap();
         assert_eq!(progress.recent_buffer.len(), MAX_BUFFER_ENTRIES);
         // The oldest entries should have been dropped.
-        assert!(progress.recent_buffer.front().unwrap().starts_with("entry 5"));
-        assert!(progress.recent_buffer.back().unwrap().starts_with("entry 24"));
+        assert!(
+            progress
+                .recent_buffer
+                .front()
+                .unwrap()
+                .starts_with("entry 5")
+        );
+        assert!(
+            progress
+                .recent_buffer
+                .back()
+                .unwrap()
+                .starts_with("entry 24")
+        );
     }
 }

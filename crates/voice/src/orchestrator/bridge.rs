@@ -1,6 +1,7 @@
 use crate::orchestrator::jobs::{OrchestratorJob, OrchestratorJobEvent, OrchestratorJobManager};
+use crate::orchestrator::progress::DEFAULT_WINDOW_SIZE;
 use crate::orchestrator::protocol::preview;
-use crate::types::{DelegateToOrchestratorArgs, VoiceUpdate};
+use crate::types::{CheckSubagentProgressArgs, DelegateToOrchestratorArgs, VoiceUpdate};
 use serde_json::json;
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -61,13 +62,31 @@ impl OrchestratorBridge {
         jobs: &OrchestratorJobManager,
     ) -> Result<Vec<serde_json::Value>, String> {
         let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        if name != "delegate_to_orchestrator" {
-            return Ok(Vec::new());
-        }
         let call_id = value
             .get("call_id")
             .and_then(|v| v.as_str())
             .ok_or("function call missing call_id")?;
+        if !self.handled_function_calls.insert(call_id.to_string()) {
+            eprintln!(
+                "orchestrator bridge duplicate function ignored call_id={} name={}",
+                call_id, name
+            );
+            return Ok(Vec::new());
+        }
+
+        match name {
+            "delegate_to_orchestrator" => self.handle_delegate_call(call_id, value, jobs),
+            "sub_agent_progress" => self.handle_progress_call(call_id, value, jobs),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn handle_delegate_call(
+        &mut self,
+        call_id: &str,
+        value: &serde_json::Value,
+        jobs: &OrchestratorJobManager,
+    ) -> Result<Vec<serde_json::Value>, String> {
         let args_raw = value
             .get("arguments")
             .and_then(|v| v.as_str())
@@ -100,14 +119,6 @@ impl OrchestratorBridge {
                 );
             }
         };
-
-        if !self.handled_function_calls.insert(call_id.to_string()) {
-            eprintln!(
-                "orchestrator bridge duplicate delegate ignored call_id={} slug={}",
-                call_id, slug
-            );
-            return Ok(Vec::new());
-        }
 
         let job_id = gen_job_id();
         eprintln!(
@@ -148,6 +159,82 @@ impl OrchestratorBridge {
             json!({"type": "response.create"}),
         ])
     }
+
+    fn handle_progress_call(
+        &mut self,
+        call_id: &str,
+        value: &serde_json::Value,
+        jobs: &OrchestratorJobManager,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let args_raw = value
+            .get("arguments")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{}");
+        if args_raw.trim().is_empty() {
+            return progress_tool_events(
+                call_id,
+                json!({
+                    "ok": false,
+                    "status": "error",
+                    "error": "sub_agent_progress requires a slug argument."
+                }),
+            );
+        }
+        let args: CheckSubagentProgressArgs = match serde_json::from_str(args_raw) {
+            Ok(args) => args,
+            Err(e) => {
+                return progress_tool_events(
+                    call_id,
+                    json!({
+                        "ok": false,
+                        "status": "error",
+                        "error": format!("invalid sub_agent_progress arguments: {e}")
+                    }),
+                );
+            }
+        };
+        let slug = match sanitize_slug(&args.slug) {
+            Some(slug) => slug,
+            None => {
+                return progress_tool_events(
+                    call_id,
+                    json!({
+                        "ok": false,
+                        "status": "error",
+                        "error": "sub_agent_progress requires a non-empty snake_case slug."
+                    }),
+                );
+            }
+        };
+        let window_size = args
+            .window_size
+            .map(|size| size.clamp(200, DEFAULT_WINDOW_SIZE))
+            .or(Some(DEFAULT_WINDOW_SIZE));
+        let Some(snapshot) = jobs.get_progress(&slug, window_size) else {
+            return progress_tool_events(
+                call_id,
+                json!({
+                    "ok": false,
+                    "status": "unknown",
+                    "slug": slug,
+                    "error": "No background orchestrator agent is known for that slug. It may not have been queued in this voice session, or it may be unavailable."
+                }),
+            );
+        };
+
+        progress_tool_events(
+            call_id,
+            json!({
+                "ok": true,
+                "slug": slug,
+                "status": snapshot.status,
+                "provider": snapshot.provider,
+                "last_activity": snapshot.last_message,
+                "recent_snippet": snapshot.recent_snippet,
+                "guidance": "Use this to give a concise spoken update. Do not claim the work is complete unless status is completed."
+            }),
+        )
+    }
 }
 
 fn orchestrator_delegate_error_events(
@@ -162,6 +249,25 @@ fn orchestrator_delegate_error_events(
     };
     let output = serde_json::to_string(&update)
         .map_err(|e| format!("failed to serialize orchestrator error output: {e}"))?;
+    Ok(vec![
+        json!({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output,
+            }
+        }),
+        json!({"type": "response.create"}),
+    ])
+}
+
+fn progress_tool_events(
+    call_id: &str,
+    payload: serde_json::Value,
+) -> Result<Vec<serde_json::Value>, String> {
+    let output = serde_json::to_string(&payload)
+        .map_err(|e| format!("failed to serialize progress output: {e}"))?;
     Ok(vec![
         json!({
             "type": "conversation.item.create",
@@ -282,4 +388,36 @@ fn sanitize_slug(value: &str) -> Option<String> {
         slug.pop();
     }
     (!slug.is_empty()).then_some(slug)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::orchestrator::OrchestratorProvider;
+
+    #[tokio::test]
+    async fn sub_agent_progress_unknown_slug_returns_error_payload() {
+        let mut bridge = OrchestratorBridge::new();
+        let jobs = OrchestratorJobManager::spawn(OrchestratorProvider::harness(None, None));
+        let call = json!({
+            "type": "response.function_call_arguments.done",
+            "name": "sub_agent_progress",
+            "call_id": "call_progress_unknown",
+            "arguments": "{\"slug\":\"missing_slug\"}"
+        });
+
+        let events = bridge
+            .handle_realtime_event(&call, &jobs)
+            .expect("progress call should produce a tool result");
+        let output = events[0]["item"]["output"]
+            .as_str()
+            .expect("function output should be serialized JSON");
+        let payload: serde_json::Value =
+            serde_json::from_str(output).expect("payload should be valid JSON");
+
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["status"], "unknown");
+        assert_eq!(payload["slug"], "missing_slug");
+        assert_eq!(events[1]["type"], "response.create");
+    }
 }

@@ -1,8 +1,10 @@
-use super::protocol::{format_job, preview, SendResult};
+use super::process::read_logged_stream;
+use super::progress::ProgressReporter;
+use super::protocol::{SendResult, format_job, preview};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// Client that drives the OpenAI Codex CLI as a background coding agent.
@@ -61,12 +63,17 @@ impl CodexClient {
         job_id: &str,
         _conversation_id: &str,
         message: &str,
+        progress: Option<ProgressReporter>,
     ) -> Result<SendResult, String> {
         eprintln!(
-            "codex send{} message_bytes={}",
+            "codex stdin{} message_bytes={} preview={}",
             format_job(Some(job_id)),
-            message.len()
+            message.len(),
+            preview(message)
         );
+        if let Some(reporter) = progress.as_ref() {
+            reporter.push(&format!("Codex stdin: {}", preview(message)));
+        }
 
         let output_path = output_path_for_job(job_id);
         let mut command = Command::new(&self.path);
@@ -98,34 +105,35 @@ impl CodexClient {
             drop(stdin);
         }
 
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        if let Some(mut stdout) = child.stdout.take() {
-            stdout
-                .read_to_end(&mut stdout_buf)
-                .await
-                .map_err(|e| format!("failed to read codex stdout: {e}"))?;
-        }
-        if let Some(mut stderr) = child.stderr.take() {
-            stderr
-                .read_to_end(&mut stderr_buf)
-                .await
-                .map_err(|e| format!("failed to read codex stderr: {e}"))?;
-        }
+        let stdout = child.stdout.take().ok_or("codex stdout unavailable")?;
+        let stderr = child.stderr.take().ok_or("codex stderr unavailable")?;
+        let stdout_task = tokio::spawn(read_logged_stream(
+            "codex",
+            "stdout",
+            job_id.to_string(),
+            stdout,
+            progress.clone(),
+        ));
+        let stderr_task = tokio::spawn(read_logged_stream(
+            "codex",
+            "stderr",
+            job_id.to_string(),
+            stderr,
+            progress.clone(),
+        ));
 
         let status = child
             .wait()
             .await
             .map_err(|e| format!("failed to wait for codex: {e}"))?;
 
+        let stdout_buf = stdout_task
+            .await
+            .map_err(|e| format!("failed to join codex stdout reader: {e}"))??;
+        let stderr_buf = stderr_task
+            .await
+            .map_err(|e| format!("failed to join codex stderr reader: {e}"))??;
         let stderr_text = String::from_utf8_lossy(&stderr_buf);
-        if !stderr_text.is_empty() {
-            eprintln!(
-                "codex stderr{} {}",
-                format_job(Some(job_id)),
-                preview(&stderr_text)
-            );
-        }
 
         if !status.success() {
             return Err(format!(
@@ -148,6 +156,9 @@ impl CodexClient {
             reply.len(),
             preview(&reply)
         );
+        if let Some(reporter) = progress.as_ref() {
+            reporter.push(&format!("Codex finished: {}", preview(&reply)));
+        }
 
         Ok(SendResult {
             reply,
@@ -189,16 +200,8 @@ fn which_codex() -> Result<PathBuf, String> {
     // Check a few common install locations before falling back to PATH.
     let candidates = [
         PathBuf::from("/usr/local/bin/codex"),
-        PathBuf::from(
-            std::env::var("HOME")
-                .unwrap_or_default()
-                + "/.local/bin/codex",
-        ),
-        PathBuf::from(
-            std::env::var("HOME")
-                .unwrap_or_default()
-                + "/.npm-global/bin/codex",
-        ),
+        PathBuf::from(std::env::var("HOME").unwrap_or_default() + "/.local/bin/codex"),
+        PathBuf::from(std::env::var("HOME").unwrap_or_default() + "/.npm-global/bin/codex"),
     ];
     for candidate in &candidates {
         if candidate.exists() {

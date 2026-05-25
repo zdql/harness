@@ -30,22 +30,33 @@ async fn run() -> Result<(), String> {
     if args.realtime {
         let openai_api_key = std::env::var("OPENAI_API_KEY")
             .map_err(|_| "OPENAI_API_KEY is required for --realtime".to_string())?;
+        let orchestrator_provider = build_orchestrator_provider(
+            &args.provider,
+            args.server_bin,
+            args.conversation_id,
+            args.codex_bin,
+            args.codex_model,
+            args.claude_bin,
+            args.claude_model,
+        )?;
         voice_loop::run_realtime_voice(voice_loop::RealtimeRunConfig {
             openai_api_key,
             model: args.model,
-            server_bin: args.server_bin,
-            conversation_id: args.conversation_id,
+            orchestrator_provider,
         })
         .await?;
         return Ok(());
     }
 
-    let orchestrator_provider = match args.provider.as_str() {
-        "codex" => {
-            OrchestratorProvider::codex(args.codex_bin, args.codex_model)
-        }
-        _ => OrchestratorProvider::harness(args.server_bin, args.conversation_id),
-    };
+    let orchestrator_provider = build_orchestrator_provider(
+        &args.provider,
+        args.server_bin,
+        args.conversation_id,
+        args.codex_bin,
+        args.codex_model,
+        args.claude_bin,
+        args.claude_model,
+    )?;
 
     if let Some(message) = args.once {
         let slug = sanitize_slug(&args.slug);
@@ -76,7 +87,7 @@ async fn delegate_to_orchestrator(
     let message = args.to_agent_message();
     let mut session = provider.open_session(slug).await?;
     let response = session
-        .send_message_until_done_for_job("voice-once", &message)
+        .send_message_until_done_for_job("voice-once", &message, None)
         .await?;
 
     Ok(VoiceUpdate {
@@ -98,6 +109,8 @@ struct CliArgs {
     provider: String,
     codex_bin: Option<String>,
     codex_model: Option<String>,
+    claude_bin: Option<String>,
+    claude_model: Option<String>,
     print_realtime_config: bool,
     realtime: bool,
     model: String,
@@ -115,6 +128,8 @@ impl CliArgs {
         let mut provider = "harness".to_string();
         let mut codex_bin = None;
         let mut codex_model = None;
+        let mut claude_bin = None;
+        let mut claude_model = None;
         let mut print_realtime_config = false;
         let mut realtime = false;
         let mut model = "gpt-realtime-2".to_string();
@@ -137,6 +152,8 @@ impl CliArgs {
                 "--provider" => provider = next_value(&mut args, "--provider")?,
                 "--codex-bin" => codex_bin = Some(next_value(&mut args, "--codex-bin")?),
                 "--codex-model" => codex_model = Some(next_value(&mut args, "--codex-model")?),
+                "--claude-bin" => claude_bin = Some(next_value(&mut args, "--claude-bin")?),
+                "--claude-model" => claude_model = Some(next_value(&mut args, "--claude-model")?),
                 "--print-realtime-config" => print_realtime_config = true,
                 "--realtime" => realtime = true,
                 "--model" => model = next_value(&mut args, "--model")?,
@@ -156,6 +173,8 @@ impl CliArgs {
             provider,
             codex_bin,
             codex_model,
+            claude_bin,
+            claude_model,
             print_realtime_config,
             realtime,
             model,
@@ -166,6 +185,25 @@ impl CliArgs {
 fn next_value(args: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {
     args.next()
         .ok_or_else(|| format!("{name} requires a value"))
+}
+
+fn build_orchestrator_provider(
+    provider: &str,
+    server_bin: Option<String>,
+    conversation_id: Option<String>,
+    codex_bin: Option<String>,
+    codex_model: Option<String>,
+    claude_bin: Option<String>,
+    claude_model: Option<String>,
+) -> Result<OrchestratorProvider, String> {
+    match provider {
+        "harness" => Ok(OrchestratorProvider::harness(server_bin, conversation_id)),
+        "codex" => Ok(OrchestratorProvider::codex(codex_bin, codex_model)),
+        "claude" | "claude-code" => Ok(OrchestratorProvider::claude(claude_bin, claude_model)),
+        other => Err(format!(
+            "unknown orchestrator provider: {other} (expected harness, codex, or claude)"
+        )),
+    }
 }
 
 fn usage() -> String {
@@ -180,10 +218,13 @@ options:
   --urgency <now|background>      Relay urgency. Defaults to background.
   --suggested-user-update <text>  Optional short phrase the voice model may say.
   --slug <slug>                   Background task slug. Defaults to default.
-  --provider <harness|codex>      Orchestrator backend. Defaults to harness.
+  --provider <harness|codex|claude>
+                                  Orchestrator backend. Defaults to harness.
   --server-bin <path>             Path to harness-server (harness provider).
   --codex-bin <path>              Path to codex binary (codex provider).
   --codex-model <model>           Model for codex to use (codex provider).
+  --claude-bin <path>             Path to claude binary (claude provider).
+  --claude-model <model>          Model for Claude Code to use (claude provider).
   --model <model>                 Realtime model. Defaults to gpt-realtime-2.
 "
     .to_string()

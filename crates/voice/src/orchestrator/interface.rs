@@ -1,5 +1,7 @@
 use super::client::OrchestratorClient;
+use super::claude::ClaudeClient;
 use super::codex::CodexClient;
+use super::progress::ProgressReporter;
 use super::protocol::SendResult;
 
 // Provider-facing boundary for background coding agents.
@@ -15,10 +17,15 @@ pub(crate) struct OrchestratorProvider {
 
 #[derive(Clone, Debug)]
 enum OrchestratorProviderKind {
-    Harness { server_bin: Option<String> },
+    Harness {
+        server_bin: Option<String>,
+    },
     Codex {
         codex_bin: Option<String>,
-        #[allow(dead_code)] // Reserved for future Codex model selection
+        model: Option<String>,
+    },
+    Claude {
+        claude_bin: Option<String>,
         model: Option<String>,
     },
 }
@@ -36,24 +43,24 @@ impl OrchestratorProvider {
 
     pub(crate) fn codex(codex_bin: Option<String>, model: Option<String>) -> Self {
         Self {
-            kind: OrchestratorProviderKind::Codex {
-                codex_bin,
-                model,
-            },
+            kind: OrchestratorProviderKind::Codex { codex_bin, model },
             initial_conversation_id: None,
         }
     }
 
-    pub(crate) async fn open_session(
-        &self,
-        slug: &str,
-    ) -> Result<OrchestratorSession, String> {
+    pub(crate) fn claude(claude_bin: Option<String>, model: Option<String>) -> Self {
+        Self {
+            kind: OrchestratorProviderKind::Claude { claude_bin, model },
+            initial_conversation_id: None,
+        }
+    }
+
+    pub(crate) async fn open_session(&self, slug: &str) -> Result<OrchestratorSession, String> {
         match &self.kind {
             OrchestratorProviderKind::Harness { server_bin } => {
                 let mut client = OrchestratorClient::spawn(server_bin.clone()).await?;
                 let conversation_id =
-                    if let Some(conversation_id) = self.initial_conversation_id_for_slug(slug)
-                    {
+                    if let Some(conversation_id) = self.initial_conversation_id_for_slug(slug) {
                         conversation_id.to_string()
                     } else {
                         client.create_conversation().await?
@@ -68,10 +75,7 @@ impl OrchestratorProvider {
                     client: OrchestratorSessionClient::Harness(client),
                 })
             }
-            OrchestratorProviderKind::Codex {
-                codex_bin,
-                model,
-            } => {
+            OrchestratorProviderKind::Codex { codex_bin, model } => {
                 let client = CodexClient::spawn(codex_bin.clone(), model.clone()).await?;
                 let conversation_id = format!("codex-{}", slug);
                 eprintln!(
@@ -82,6 +86,19 @@ impl OrchestratorProvider {
                     slug: slug.to_string(),
                     conversation_id,
                     client: OrchestratorSessionClient::Codex(client),
+                })
+            }
+            OrchestratorProviderKind::Claude { claude_bin, model } => {
+                let client = ClaudeClient::spawn(claude_bin.clone(), model.clone()).await?;
+                let conversation_id = format!("claude-{}", slug);
+                eprintln!(
+                    "orchestrator session opened provider=claude slug={} conversation={}",
+                    slug, conversation_id
+                );
+                Ok(OrchestratorSession {
+                    slug: slug.to_string(),
+                    conversation_id,
+                    client: OrchestratorSessionClient::Claude(client),
                 })
             }
         }
@@ -99,6 +116,7 @@ impl OrchestratorProvider {
 enum OrchestratorSessionClient {
     Harness(OrchestratorClient),
     Codex(CodexClient),
+    Claude(ClaudeClient),
 }
 
 pub(crate) struct OrchestratorSession {
@@ -116,6 +134,7 @@ impl OrchestratorSession {
         &mut self,
         job_id: &str,
         message: &str,
+        progress: Option<ProgressReporter>,
     ) -> Result<SendResult, String> {
         eprintln!(
             "orchestrator session send provider={} slug={} job={} conversation={} message_bytes={}",
@@ -128,12 +147,32 @@ impl OrchestratorSession {
         match &mut self.client {
             OrchestratorSessionClient::Harness(client) => {
                 client
-                    .send_message_until_done_for_job(job_id, &self.conversation_id, message)
+                    .send_message_until_done_for_job(
+                        job_id,
+                        &self.conversation_id,
+                        message,
+                        progress,
+                    )
                     .await
             }
             OrchestratorSessionClient::Codex(client) => {
                 client
-                    .send_message_until_done_for_job(job_id, &self.conversation_id, message)
+                    .send_message_until_done_for_job(
+                        job_id,
+                        &self.conversation_id,
+                        message,
+                        progress,
+                    )
+                    .await
+            }
+            OrchestratorSessionClient::Claude(client) => {
+                client
+                    .send_message_until_done_for_job(
+                        job_id,
+                        &self.conversation_id,
+                        message,
+                        progress,
+                    )
                     .await
             }
         }
@@ -143,6 +182,7 @@ impl OrchestratorSession {
         match self.client {
             OrchestratorSessionClient::Harness(_) => "harness",
             OrchestratorSessionClient::Codex(_) => "codex",
+            OrchestratorSessionClient::Claude(_) => "claude",
         }
     }
 }

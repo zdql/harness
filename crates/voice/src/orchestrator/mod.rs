@@ -1,8 +1,10 @@
 pub mod bridge;
 pub mod client;
+pub mod claude;
 pub mod codex;
 pub mod interface;
 pub mod jobs;
+pub mod process;
 pub mod progress;
 pub mod protocol;
 

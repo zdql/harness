@@ -1,6 +1,7 @@
+use super::progress::ProgressReporter;
 use super::protocol::{
-    compact_json, format_job, preview, CreateResult, RpcLogContext, RpcResponse,
-    SendResult, ToolCallInfo,
+    CreateResult, RpcLogContext, RpcResponse, SendResult, ToolCallInfo, compact_json, format_job,
+    preview,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -49,7 +50,12 @@ impl OrchestratorClient {
 
     pub(crate) async fn create_conversation(&mut self) -> Result<String, String> {
         let result: CreateResult = self
-            .call("conversation.create", json!({}), RpcLogContext::default())
+            .call(
+                "conversation.create",
+                json!({}),
+                RpcLogContext::default(),
+                None,
+            )
             .await?;
         eprintln!("orchestrator conversation created id={}", result.id);
         Ok(result.id)
@@ -60,8 +66,9 @@ impl OrchestratorClient {
         job_id: &str,
         conversation_id: &str,
         message: &str,
+        progress: Option<ProgressReporter>,
     ) -> Result<SendResult, String> {
-        self.send_message_until_done_with_context(conversation_id, message, Some(job_id))
+        self.send_message_until_done_with_context(conversation_id, message, Some(job_id), progress)
             .await
     }
 
@@ -70,9 +77,10 @@ impl OrchestratorClient {
         conversation_id: &str,
         message: &str,
         job_id: Option<&str>,
+        progress: Option<ProgressReporter>,
     ) -> Result<SendResult, String> {
         let mut result = self
-            .send_message_with_context(conversation_id, message, job_id)
+            .send_message_with_context(conversation_id, message, job_id, progress.clone())
             .await?;
         eprintln!(
             "orchestrator rpc recv conversation.send{} conversation={} reply_bytes={} tool_calls={} suspended={}",
@@ -90,10 +98,13 @@ impl OrchestratorClient {
                 conversation_id
             );
             result.reply = self
-                .wait_for_continuation_done(RpcLogContext {
-                    conversation_id: Some(conversation_id),
-                    job_id,
-                })
+                .wait_for_continuation_done(
+                    RpcLogContext {
+                        conversation_id: Some(conversation_id),
+                        job_id,
+                    },
+                    progress.clone(),
+                )
                 .await?;
             result.suspended = false;
             eprintln!(
@@ -111,6 +122,7 @@ impl OrchestratorClient {
         conversation_id: &str,
         message: &str,
         job_id: Option<&str>,
+        progress: Option<ProgressReporter>,
     ) -> Result<SendResult, String> {
         eprintln!(
             "orchestrator rpc send conversation.send{} conversation={} bytes={}",
@@ -128,6 +140,7 @@ impl OrchestratorClient {
                 conversation_id: Some(conversation_id),
                 job_id,
             },
+            progress,
         )
         .await
     }
@@ -137,6 +150,7 @@ impl OrchestratorClient {
         method: &str,
         params: Value,
         log_context: RpcLogContext<'_>,
+        progress: Option<ProgressReporter>,
     ) -> Result<T, String>
     where
         T: for<'de> Deserialize<'de>,
@@ -179,7 +193,13 @@ impl OrchestratorClient {
                 .map_err(|e| format!("invalid JSON from harness-server: {e}: {line}"))?;
 
             if value.get("method").and_then(Value::as_str) == Some("agent.event") {
-                log_agent_event(log_context, value.get("params").unwrap_or(&Value::Null));
+                let event = value.get("params").unwrap_or(&Value::Null);
+                log_agent_event(log_context, event);
+                if let Some(reporter) = progress.as_ref() {
+                    if let Some(message) = progress_message_from_agent_event(event) {
+                        reporter.push(&message);
+                    }
+                }
                 continue;
             }
 
@@ -201,6 +221,7 @@ impl OrchestratorClient {
     async fn wait_for_continuation_done(
         &mut self,
         log_context: RpcLogContext<'_>,
+        progress: Option<ProgressReporter>,
     ) -> Result<String, String> {
         loop {
             let Some(line) = self
@@ -220,6 +241,11 @@ impl OrchestratorClient {
 
             let params = value.get("params").cloned().unwrap_or(Value::Null);
             log_agent_event(log_context, &params);
+            if let Some(reporter) = progress.as_ref() {
+                if let Some(message) = progress_message_from_agent_event(&params) {
+                    reporter.push(&message);
+                }
+            }
             if params.get("kind").and_then(Value::as_str) == Some("continuation_done") {
                 return Ok(params
                     .get("reply")
@@ -342,6 +368,61 @@ fn log_agent_event_inner(prefix: &str, event: &Value, depth: usize) {
     }
 }
 
+fn progress_message_from_agent_event(event: &Value) -> Option<String> {
+    let kind = event.get("kind").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "content_delta" => event
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|text| format!("Assistant: {}", preview(text))),
+        "reasoning_delta" => Some("Reasoning in progress.".to_string()),
+        "tool_call_start" => event
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|name| format!("Started tool {name}.")),
+        "tool_call_end" => {
+            let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let result = event.get("result").and_then(Value::as_str).unwrap_or("");
+            Some(format!("Finished tool {name}: {}", preview(result)))
+        }
+        "subagent_started" => {
+            let subagent_id = event
+                .get("subagent_id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let task = event.get("task").and_then(Value::as_str).unwrap_or("");
+            Some(format!("Started subagent {subagent_id}: {}", preview(task)))
+        }
+        "subagent_completed" => {
+            let subagent_id = event
+                .get("subagent_id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let status = event.get("status").and_then(Value::as_str).unwrap_or("");
+            let output = event.get("output").and_then(Value::as_str).unwrap_or("");
+            Some(format!(
+                "Subagent {subagent_id} {status}: {}",
+                preview(output)
+            ))
+        }
+        "subagent_event" => {
+            let subagent_id = event
+                .get("subagent_id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            event
+                .get("inner")
+                .and_then(progress_message_from_agent_event)
+                .map(|message| format!("Subagent {subagent_id}: {message}"))
+        }
+        "continuation_done" => event
+            .get("reply")
+            .and_then(Value::as_str)
+            .map(|reply| format!("Finished: {}", preview(reply))),
+        _ => None,
+    }
+}
+
 fn log_tool_call_summaries(
     job_id: Option<&str>,
     conversation_id: &str,
@@ -359,8 +440,6 @@ fn log_tool_call_summaries(
         );
     }
 }
-
-
 
 impl Drop for OrchestratorClient {
     fn drop(&mut self) {
