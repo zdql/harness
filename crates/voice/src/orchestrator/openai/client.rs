@@ -1,8 +1,12 @@
-use super::protocol::{format_job, preview, SendResult};
+//! Wrapper around the OpenAI Codex CLI (`codex exec`).
+
+use crate::orchestrator::interface::SendResult;
+use crate::orchestrator::progress::ProgressReporter;
+use crate::orchestrator::shared::{format_job, preview, read_logged_stream};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// Client that drives the OpenAI Codex CLI as a background coding agent.
@@ -14,13 +18,14 @@ use tokio::process::Command;
 pub(crate) struct CodexClient {
     path: PathBuf,
     model: Option<String>,
+    conversation_id: String,
 }
 
 impl CodexClient {
-    /// Prepare a Codex non-interactive client.
     pub(crate) async fn spawn(
         codex_bin: Option<String>,
         model: Option<String>,
+        conversation_id: String,
     ) -> Result<Self, String> {
         let path = resolve_codex_bin(codex_bin)?;
 
@@ -48,34 +53,38 @@ impl CodexClient {
         }
 
         eprintln!("codex client spawned bin={}", path.display());
-        Ok(Self { path, model })
+        Ok(Self {
+            path,
+            model,
+            conversation_id,
+        })
     }
 
-    /// Send a user message to Codex and return the text reply.
-    ///
-    /// Each call spawns `codex exec` with the prompt on stdin so shell escaping
-    /// is avoided. We ask Codex to write its final assistant message to a temp
-    /// file because formatted stdout may contain progress output.
+    pub(crate) fn conversation_id(&self) -> &str {
+        &self.conversation_id
+    }
+
     pub(crate) async fn send_message_until_done_for_job(
         &mut self,
         job_id: &str,
-        _conversation_id: &str,
         message: &str,
+        progress: Option<ProgressReporter>,
     ) -> Result<SendResult, String> {
         eprintln!(
-            "codex send{} message_bytes={}",
+            "codex stdin{} message_bytes={} preview={}",
             format_job(Some(job_id)),
-            message.len()
+            message.len(),
+            preview(message)
         );
+        if let Some(reporter) = progress.as_ref() {
+            reporter.push(&format!("Codex stdin: {}", preview(message)));
+        }
 
         let output_path = output_path_for_job(job_id);
         let mut command = Command::new(&self.path);
         command
             .arg("exec")
-            .arg("--sandbox")
-            .arg("workspace-write")
-            .arg("-c")
-            .arg("approval_policy=\"never\"")
+            .arg("--full-auto")
             .arg("--output-last-message")
             .arg(&output_path)
             .arg("-")
@@ -98,34 +107,35 @@ impl CodexClient {
             drop(stdin);
         }
 
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        if let Some(mut stdout) = child.stdout.take() {
-            stdout
-                .read_to_end(&mut stdout_buf)
-                .await
-                .map_err(|e| format!("failed to read codex stdout: {e}"))?;
-        }
-        if let Some(mut stderr) = child.stderr.take() {
-            stderr
-                .read_to_end(&mut stderr_buf)
-                .await
-                .map_err(|e| format!("failed to read codex stderr: {e}"))?;
-        }
+        let stdout = child.stdout.take().ok_or("codex stdout unavailable")?;
+        let stderr = child.stderr.take().ok_or("codex stderr unavailable")?;
+        let stdout_task = tokio::spawn(read_logged_stream(
+            "codex",
+            "stdout",
+            job_id.to_string(),
+            stdout,
+            progress.clone(),
+        ));
+        let stderr_task = tokio::spawn(read_logged_stream(
+            "codex",
+            "stderr",
+            job_id.to_string(),
+            stderr,
+            progress.clone(),
+        ));
 
         let status = child
             .wait()
             .await
             .map_err(|e| format!("failed to wait for codex: {e}"))?;
 
+        let stdout_buf = stdout_task
+            .await
+            .map_err(|e| format!("failed to join codex stdout reader: {e}"))??;
+        let stderr_buf = stderr_task
+            .await
+            .map_err(|e| format!("failed to join codex stderr reader: {e}"))??;
         let stderr_text = String::from_utf8_lossy(&stderr_buf);
-        if !stderr_text.is_empty() {
-            eprintln!(
-                "codex stderr{} {}",
-                format_job(Some(job_id)),
-                preview(&stderr_text)
-            );
-        }
 
         if !status.success() {
             return Err(format!(
@@ -148,6 +158,9 @@ impl CodexClient {
             reply.len(),
             preview(&reply)
         );
+        if let Some(reporter) = progress.as_ref() {
+            reporter.push(&format!("Codex finished: {}", preview(&reply)));
+        }
 
         Ok(SendResult {
             reply,
@@ -186,19 +199,10 @@ fn output_path_for_job(job_id: &str) -> PathBuf {
 }
 
 fn which_codex() -> Result<PathBuf, String> {
-    // Check a few common install locations before falling back to PATH.
     let candidates = [
         PathBuf::from("/usr/local/bin/codex"),
-        PathBuf::from(
-            std::env::var("HOME")
-                .unwrap_or_default()
-                + "/.local/bin/codex",
-        ),
-        PathBuf::from(
-            std::env::var("HOME")
-                .unwrap_or_default()
-                + "/.npm-global/bin/codex",
-        ),
+        PathBuf::from(std::env::var("HOME").unwrap_or_default() + "/.local/bin/codex"),
+        PathBuf::from(std::env::var("HOME").unwrap_or_default() + "/.npm-global/bin/codex"),
     ];
     for candidate in &candidates {
         if candidate.exists() {
@@ -206,6 +210,5 @@ fn which_codex() -> Result<PathBuf, String> {
         }
     }
 
-    // Fall back to bare "codex" and let the OS resolve via PATH.
     Ok(PathBuf::from("codex"))
 }

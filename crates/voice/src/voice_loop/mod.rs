@@ -24,14 +24,11 @@ pub(crate) use session::session_update_json;
 pub(crate) struct RealtimeRunConfig {
     pub openai_api_key: String,
     pub model: String,
-    pub server_bin: Option<String>,
-    pub conversation_id: Option<String>,
+    pub orchestrator_provider: OrchestratorProvider,
 }
 
 pub(crate) async fn run_realtime_voice(config: RealtimeRunConfig) -> Result<(), String> {
-    let orchestrator_provider =
-        OrchestratorProvider::harness(config.server_bin, config.conversation_id);
-    let orchestrator_jobs = OrchestratorJobManager::spawn(orchestrator_provider);
+    let orchestrator_jobs = OrchestratorJobManager::spawn(config.orchestrator_provider);
     let orchestrator_bridge = OrchestratorBridge::new();
 
     let playback = Arc::new(Mutex::new(PlaybackBuffer::new()));

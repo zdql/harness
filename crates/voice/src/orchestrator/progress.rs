@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::Serialize;
@@ -7,9 +7,10 @@ use serde::Serialize;
 /// Maximum number of progress entries retained per job.
 const MAX_BUFFER_ENTRIES: usize = 20;
 
-/// Minimum interval (in seconds) between progress queries for the same job
-/// to avoid flooding the Realtime API.
-const RATE_LIMIT_SECS: u64 = 2;
+/// Minimum interval (in seconds) between progress queries for the same job.
+/// Voice cadence: well under a typical conversational gap, but enough to
+/// discourage mechanical re-polling in the same speaking turn.
+const RATE_LIMIT_SECS: u64 = 5;
 
 /// Default character window for the recent_snippet field.
 pub(crate) const DEFAULT_WINDOW_SIZE: usize = 1000;
@@ -23,7 +24,6 @@ pub(crate) enum JobStatus {
     Running,
     Completed,
     Failed,
-    Unknown,
 }
 
 impl std::fmt::Display for JobStatus {
@@ -33,7 +33,6 @@ impl std::fmt::Display for JobStatus {
             Self::Running => "running",
             Self::Completed => "completed",
             Self::Failed => "failed",
-            Self::Unknown => "unknown",
         })
     }
 }
@@ -45,6 +44,33 @@ pub(crate) struct ProgressSnapshot {
     pub provider: String,
     pub last_message: String,
     pub recent_snippet: String,
+    /// Seconds since the job was registered (or since it went `running` if
+    /// it has progressed past `Queued`). Always >= 0.
+    pub elapsed_seconds: f64,
+    /// True when the caller queried before the per-slug rate limit elapsed.
+    /// The snapshot still carries the most recent cached fields so the model
+    /// has something to say; this flag signals "don't poll again yet."
+    pub rate_limited: bool,
+    /// When `rate_limited` is true, the number of seconds the caller should
+    /// wait before re-querying. Zero otherwise.
+    pub retry_after_seconds: u64,
+}
+
+/// Lightweight writer that provider clients can clone into async read loops.
+#[derive(Clone)]
+pub(crate) struct ProgressReporter {
+    store: Arc<ProgressStore>,
+    slug: String,
+}
+
+impl ProgressReporter {
+    pub(crate) fn new(store: Arc<ProgressStore>, slug: String) -> Self {
+        Self { store, slug }
+    }
+
+    pub(crate) fn push(&self, message: &str) {
+        self.store.push_progress(&self.slug, message);
+    }
 }
 
 // ── Internal tracking ──────────────────────────────────────────────────
@@ -57,6 +83,10 @@ struct JobProgress {
     /// Bounded ring of recent progress entries (newest last).
     recent_buffer: VecDeque<String>,
     last_updated: Instant,
+    /// Wall-clock origin for `elapsed_seconds`. Set on `register_job` and
+    /// re-stamped on `set_running` so the voice model gets time-in-flight
+    /// rather than time-in-queue once the job actually starts.
+    started_at: Instant,
 }
 
 struct ProgressInner {
@@ -80,39 +110,44 @@ impl ProgressStore {
         }
     }
 
-    /// Register a new job in the progress store.
-    pub fn register_job(&self, job_id: &str, provider: &str) {
+    /// Register or replace a slug in the progress store.
+    pub fn register_job(&self, slug: &str, provider: &str) {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
+        let now = Instant::now();
         inner.jobs.insert(
-            job_id.to_string(),
+            slug.to_string(),
             JobProgress {
                 status: JobStatus::Queued,
                 provider: provider.to_string(),
                 last_message: String::new(),
                 recent_buffer: VecDeque::new(),
-                last_updated: Instant::now(),
+                last_updated: now,
+                started_at: now,
             },
         );
     }
 
     /// Mark a previously registered job as running.
-    pub fn set_running(&self, job_id: &str) {
+    pub fn set_running(&self, slug: &str) {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
-        if let Some(progress) = inner.jobs.get_mut(job_id) {
+        if let Some(progress) = inner.jobs.get_mut(slug) {
+            let now = Instant::now();
             progress.status = JobStatus::Running;
-            progress.last_updated = Instant::now();
+            progress.last_updated = now;
+            // Reset the clock at run-start so elapsed reflects working time.
+            progress.started_at = now;
         }
     }
 
     /// Append a progress entry for a running job.
     /// The message is trimmed and empty strings are silently ignored.
-    pub fn push_progress(&self, job_id: &str, message: &str) {
+    pub fn push_progress(&self, slug: &str, message: &str) {
         let trimmed = message.trim();
         if trimmed.is_empty() {
             return;
         }
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
-        if let Some(progress) = inner.jobs.get_mut(job_id) {
+        if let Some(progress) = inner.jobs.get_mut(slug) {
             progress.last_message = trimmed.to_string();
             if progress.recent_buffer.len() >= MAX_BUFFER_ENTRIES {
                 progress.recent_buffer.pop_front();
@@ -123,9 +158,9 @@ impl ProgressStore {
     }
 
     /// Mark a job as completed with the final reply.
-    pub fn set_completed(&self, job_id: &str, result: &str) {
+    pub fn set_completed(&self, slug: &str, result: &str) {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
-        if let Some(progress) = inner.jobs.get_mut(job_id) {
+        if let Some(progress) = inner.jobs.get_mut(slug) {
             progress.status = JobStatus::Completed;
             let trimmed = result.trim();
             if !trimmed.is_empty() {
@@ -140,9 +175,9 @@ impl ProgressStore {
     }
 
     /// Mark a job as failed with an error message.
-    pub fn set_failed(&self, job_id: &str, error: &str) {
+    pub fn set_failed(&self, slug: &str, error: &str) {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
-        if let Some(progress) = inner.jobs.get_mut(job_id) {
+        if let Some(progress) = inner.jobs.get_mut(slug) {
             progress.status = JobStatus::Failed;
             let trimmed = error.trim();
             if !trimmed.is_empty() {
@@ -153,38 +188,36 @@ impl ProgressStore {
     }
 
     /// Query the progress of a job. Returns `None` if the job is unknown.
-    /// Applies rate limiting: returns a "rate_limited" snapshot if queried
-    /// too frequently, containing only the status and provider fields.
-    pub fn get_update(
-        &self,
-        job_id: &str,
-        window_size: Option<usize>,
-    ) -> Option<ProgressSnapshot> {
+    /// Applies rate limiting: when the caller polls within `RATE_LIMIT_SECS`,
+    /// the snapshot still carries the cached fields but `rate_limited` is set
+    /// so the voice model knows to back off.
+    pub fn get_update(&self, slug: &str, window_size: Option<usize>) -> Option<ProgressSnapshot> {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
 
-        let progress = inner.jobs.get(job_id)?;
+        let progress = inner.jobs.get(slug)?;
         let status = progress.status;
         let provider = progress.provider.clone();
         let last_message = progress.last_message.clone();
         let recent_buffer = progress.recent_buffer.clone();
+        let elapsed_seconds = progress.started_at.elapsed().as_secs_f64();
 
-        // Rate limit check.
         let now = Instant::now();
-        if let Some(last) = inner.last_query.get(job_id) {
-            if now.duration_since(*last).as_secs() < RATE_LIMIT_SECS {
-                // Return a minimal snapshot indicating rate limit.
-                return Some(ProgressSnapshot {
-                    status,
-                    provider,
-                    last_message: String::new(),
-                    recent_snippet: format!(
-                        "(rate limited — wait {}s between queries)",
-                        RATE_LIMIT_SECS
-                    ),
-                });
+        let (rate_limited, retry_after_seconds) = match inner.last_query.get(slug) {
+            Some(last) => {
+                let since = now.duration_since(*last).as_secs();
+                if since < RATE_LIMIT_SECS {
+                    (true, RATE_LIMIT_SECS - since)
+                } else {
+                    (false, 0)
+                }
             }
+            None => (false, 0),
+        };
+        // Only stamp the last_query when the caller is actually allowed to
+        // pull a fresh snapshot. A blocked poll should not extend the window.
+        if !rate_limited {
+            inner.last_query.insert(slug.to_string(), now);
         }
-        inner.last_query.insert(job_id.to_string(), now);
 
         let max_chars = window_size.unwrap_or(DEFAULT_WINDOW_SIZE);
         let recent_snippet = truncate_buffer(&recent_buffer, max_chars);
@@ -194,15 +227,18 @@ impl ProgressStore {
             provider,
             last_message,
             recent_snippet,
+            elapsed_seconds,
+            rate_limited,
+            retry_after_seconds,
         })
     }
 
     /// Remove a job from the store (e.g. after it has been completed for a
     /// while and memory should be reclaimed). Returns true if the job
     /// existed.
-    pub fn remove(&self, job_id: &str) -> bool {
+    pub fn remove(&self, slug: &str) -> bool {
         let mut inner = self.inner.lock().expect("progress store mutex poisoned");
-        inner.jobs.remove(job_id).is_some()
+        inner.jobs.remove(slug).is_some()
     }
 }
 
@@ -307,13 +343,27 @@ mod tests {
 
         // First query should succeed.
         let snap1 = store.get_update("job-rl", None).unwrap();
-        assert!(!snap1.recent_snippet.contains("rate limited"));
+        assert!(!snap1.rate_limited);
+        assert_eq!(snap1.retry_after_seconds, 0);
+        assert_eq!(snap1.last_message, "working");
 
-        // Immediate second query should be rate limited.
+        // Immediate second query should be rate limited but still return
+        // the cached snapshot (last_message + recent_snippet).
         let snap2 = store.get_update("job-rl", None).unwrap();
-        assert!(snap2.recent_snippet.contains("rate limited"));
-        // Status should still be available.
+        assert!(snap2.rate_limited);
+        assert!(snap2.retry_after_seconds > 0);
         assert_eq!(snap2.status, JobStatus::Running);
+        assert_eq!(snap2.last_message, "working");
+        assert!(snap2.recent_snippet.contains("working"));
+    }
+
+    #[test]
+    fn elapsed_seconds_reported() {
+        let store = ProgressStore::new();
+        store.register_job("job-el", "harness");
+        store.set_running("job-el");
+        let snap = store.get_update("job-el", None).unwrap();
+        assert!(snap.elapsed_seconds >= 0.0);
     }
 
     #[test]
@@ -378,7 +428,19 @@ mod tests {
         let progress = inner.jobs.get("job-buf").unwrap();
         assert_eq!(progress.recent_buffer.len(), MAX_BUFFER_ENTRIES);
         // The oldest entries should have been dropped.
-        assert!(progress.recent_buffer.front().unwrap().starts_with("entry 5"));
-        assert!(progress.recent_buffer.back().unwrap().starts_with("entry 24"));
+        assert!(
+            progress
+                .recent_buffer
+                .front()
+                .unwrap()
+                .starts_with("entry 5")
+        );
+        assert!(
+            progress
+                .recent_buffer
+                .back()
+                .unwrap()
+                .starts_with("entry 24")
+        );
     }
 }

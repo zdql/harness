@@ -9,6 +9,7 @@ name = "harness-voice-service"
 path = "src/main.rs"
 
 [dependencies]
+async-trait = "0.1"
 base64 = "0.22"
 cpal = "0.15"
 futures-util = "0.3"

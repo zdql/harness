@@ -54,7 +54,8 @@ pub(crate) struct VoiceUpdate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CheckSubagentProgressArgs {
-    pub job_id: String,
+    #[serde(alias = "subagent_slug", alias = "sub_agent_slug", alias = "job_id")]
+    pub slug: String,
     #[serde(default)]
     pub window_size: Option<usize>,
 }
